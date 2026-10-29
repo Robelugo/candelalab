@@ -14,7 +14,7 @@ instancing.py  Retículas grandes: instanciación con Geometry Nodes.
 bl_info = {
     "name": "CandelaLab",
     "author": "CandelaLab",
-    "version": (0, 13, 0),
+    "version": (0, 14, 0),
     "blender": (4, 2, 0),
     "location": "Vista 3D > Barra lateral (N) > CandelaLab · Añadir > Malla > Hypar (CandelaLab)",
     "description": "Diseño paramétrico de cascarones laminares de concreto: hypars y bóvedas radiales de hypars",

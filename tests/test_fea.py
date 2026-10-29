@@ -216,9 +216,14 @@ class TestSupports(unittest.TestCase):
         self.assertIn("FEA_MECHANISM", {c["code"] for c in two.checks if c["level"] == "WARNING"})
         self.assertEqual(fe().summary["rigid_body_modes"], 0)                     # 4 esquinas articuladas
         self.assertEqual(fe(support_layout="LOW_CORNERS", support_type="FIXED").summary["rigid_body_modes"], 0)
-        wide = fe(support_layout="LOW_CORNERS", support_size=1.5)                 # huellas con varios nodos
-        self.assertGreater(min(s["nodes"] for s in wide.summary["supports"]), 1)
-        self.assertEqual(wide.summary["rigid_body_modes"], 0)
+        # Articulado: un solo nodo aunque la huella sea grande (varios nodos impedirían el giro).
+        wide = fe(support_layout="LOW_CORNERS", support_size=1.5)
+        self.assertEqual([s["nodes"] for s in wide.summary["supports"]], [1, 1])
+        self.assertEqual(wide.summary["rigid_body_modes"], 1)
+        self.assertIn("FEA_PINNED_POINT", {c["code"] for c in wide.checks})
+        fixed = fe(support_layout="LOW_CORNERS", support_type="FIXED", support_size=1.5)   # huella con varios nodos
+        self.assertGreater(min(s["nodes"] for s in fixed.summary["supports"]), 1)
+        self.assertNotIn("FEA_PINNED_POINT", {c["code"] for c in fixed.checks})
         none = fe(support_layout="NONE")
         self.assertEqual(none.summary["rigid_body_modes"], 6)
         self.assertIn("FEA_NO_SUPPORTS", {c["code"] for c in none.checks if c["level"] == "ERROR"})
@@ -271,6 +276,35 @@ class TestSupports(unittest.TestCase):
             self.assertAlmostEqual(t, T / math.sqrt(1 + (K * y) ** 2 + (K * x) ** 2), places=9)
         normal = parse_inp(to_inp(fe(thickness_mode="NORMAL"), "espesor"))
         self.assertEqual(normal["nodal_thickness"], {})
+
+    def test_load_on_support_nodes(self):
+        # CalculiX suma a la reacción la carga de los propios nodos apoyados. Placa plana de elementos de
+        # 1 × 1 m apoyada sólo en sus cuatro esquinas, cada una de un elemento: la carga consistente de una
+        # esquina es 1/4 de la del elemento en S4 y −1/12 (hacia arriba) en S8R.
+        flat = dict(z_sw=H, z_se=H, z_ne=H, z_nw=H, thickness_mode="NORMAL", support_size=0.01,
+                    fea_live_load=2.0, fea_live_half=False, fea_factor_dead=1.2, fea_factor_live=1.6)
+        w_e = 2400 * GRAVITY * T / 1000.0
+        lin = fe(**flat, fea_element_order="LINEAR")
+        self.assertEqual(len(lin.nsets["NAPOYOS"]), 4)
+        sup = lin.summary["support_loads_kN"]
+        self.assertAlmostEqual(sup["PP"][2], -w_e, places=9)
+        self.assertAlmostEqual(sup["CV"][2], -2.0, places=9)
+        self.assertAlmostEqual(sup["COMB"][2], 1.2 * -w_e + 1.6 * -2.0, places=9)
+        quad = fe(**flat).summary["support_loads_kN"]
+        self.assertAlmostEqual(quad["PP"][2], w_e / 3, places=9)
+        self.assertAlmostEqual(quad["CV"][2], 2.0 / 3, places=9)
+        for vec in (*sup.values(), *quad.values()):
+            self.assertAlmostEqual(abs(vec[0]) + abs(vec[1]), 0.0, places=12)
+        # Columna B32: la base recibe 1/6 del peso del elemento inferior (4 por columna).
+        col = fe_model_from_params(UMB)[0]
+        (a, b) = col.beams[0][1]
+        base, top = col.nsets["NB_C"][0], col.blocks[-1][2][-1][-1]
+        length = math.dist(col.nodes[base], col.nodes[top])
+        self.assertAlmostEqual(col.summary["support_loads_kN"]["PP"][2],
+                               -col.material["density"] * GRAVITY * a * b * length / 4 / 6 / 1000.0, places=9)
+        # La cabecera del .inp da la reacción RF esperada.
+        text = to_inp(lin, "apoyos")
+        self.assertIn(f"RF Fx=0.000 Fy=0.000 Fz={-w_e - lin.summary['totals_kN']['PP'][2]:.3f}", text)
 
 
 class TestOtherShells(unittest.TestCase):

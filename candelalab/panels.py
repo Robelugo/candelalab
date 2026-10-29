@@ -532,10 +532,11 @@ class CANDELA_PT_fea_results(_Sub, bpy.types.Panel):
         if summary.get("reactions"):
             box = layout.box()
             box.use_property_split = False
-            box.label(text="Reacciones del .dat frente a cargas (Fz, kN)", icon='CHECKMARK')
+            box.label(text="Reacción RF del .dat / esperada (Fz, kN)", icon='CHECKMARK')
             col = box.column(align=True)
             for r in summary["reactions"]:
-                _kv(col, r["step"], f"{r['reaction_kN'][2]:.2f} / {-r['load_kN'][2]:.2f}")
+                expected = r.get("expected_kN", [-c for c in r["load_kN"]])
+                _kv(col, r["step"], f"{r['reaction_kN'][2]:.2f} / {expected[2]:.2f}")
         for ch in summary.get("checks", []):
             _wrapped(layout, context, ch["message"], icon=LEVEL_ICONS[ch["level"]])
         _wrapped(layout, context, "Resultados de un análisis lineal con los datos que exportaste. Interpretarlos "

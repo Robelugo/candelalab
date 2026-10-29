@@ -18,10 +18,11 @@ varía y se escribe por nodo (*NODAL THICKNESS) como t·cos α (primer orden).
 
 Apoyos
 ------
-Cada apoyo restringe los nodos de su huella (cuadrado de lado «Tamaño»; si no
-cae ninguno, el más cercano):
-* PINNED: traslaciones (1–3);
-* FIXED: traslaciones y giros (1–6);
+* PINNED: traslaciones (1–3) del nodo más cercano al centro del apoyo. Es una
+  articulación real; impedir las traslaciones de varios nodos impediría
+  también el giro (casi un empotramiento, que dependería de la malla);
+* FIXED: traslaciones y giros (1–6) de los nodos de su huella (cuadrado de
+  lado «Tamaño»; si no cae ninguno, el más cercano);
 * COLUMN: viga vertical (B32/B31, sección cuadrada) desde el desplante hasta
   el nodo del cascarón sobre su eje, con la base empotrada o articulada; o,
   sin columna, empotramiento de la huella.
@@ -56,7 +57,9 @@ Comprobaciones (geométricas)
 ----------------------------
 * Movimientos de sólido rígido que los apoyos no impiden (mecanismo).
 * Conectividad del modelo.
-* Totales de cada caso, para cotejarlos con las reacciones del programa.
+* Totales de cada caso, para cotejarlos con las reacciones del programa, y la
+  parte aplicada en los propios nodos de apoyo, que CalculiX suma a la
+  reacción (RF).
 """
 
 from __future__ import annotations
@@ -279,6 +282,11 @@ def build_fe_model(model, p: dict, report: dict | None = None, grid_modules: int
                 continue
             checks.append(_c("WARNING", "FEA_COLUMN_SKIPPED",
                              f"El apoyo {sp.name} está en el desplante o por debajo: se empotra sin columna."))
+        if sp.kind == "PINNED":
+            # Articulación real: un solo nodo. Impedir las traslaciones de varios nodos de la huella
+            # también impide el giro (casi un empotramiento, y más cuanto más fina la malla).
+            foot = [min(foot, key=lambda v: math.hypot(md.plan_points[v][0] - sp.position[0],
+                                                       md.plan_points[v][1] - sp.position[1]))]
         nsets[f"NS_{name}"] = foot
         boundary.append((f"NS_{name}", 1, 3 if sp.kind == "PINNED" else 6))
     if columns:
@@ -342,8 +350,10 @@ def build_fe_model(model, p: dict, report: dict | None = None, grid_modules: int
     # Resumen y comprobaciones
     weights = {"shell": weight_shell, **weight_webs, "columns": weight_cols}
     totals = {c.name: _case_total(c, sum(weights.values())) for c in cases}
+    on_supports = _support_loads(fe, rho)
     for name, _title, parts in combos:
         totals[name] = [sum(f * totals[case][i] for case, f in parts) for i in range(3)]
+        on_supports[name] = [sum(f * on_supports[case][i] for case, f in parts) for i in range(3)]
     counts = {}
     for etype, _set, conns in fe.blocks:
         counts[etype] = counts.get(etype, 0) + len(conns)
@@ -357,6 +367,7 @@ def build_fe_model(model, p: dict, report: dict | None = None, grid_modules: int
         "plan_area": plan_area,
         "weight_kN": {k: v / 1000.0 for k, v in weights.items()},
         "totals_kN": {k: [v / 1000.0 for v in vec] for k, vec in totals.items()},
+        "support_loads_kN": {k: [v / 1000.0 for v in vec] for k, vec in on_supports.items()},
         "loaded_area": {c.name: c.area for c in cases if c.area is not None},
         "supports": [{"set": name, "dofs": [a, b], "nodes": len(fe.nsets[name])} for name, a, b in boundary],
         "rigid_body_modes": free,
@@ -435,6 +446,40 @@ def _case_total(case: LoadCase, weight: float) -> list[float]:
     tot = [sum(f[i] for f in case.forces.values()) for i in range(3)]
     tot[2] -= case.gravity * weight
     return tot
+
+
+def _support_loads(fe: FEModel, rho: float) -> dict[str, list[float]]:
+    """Carga de cada caso aplicada en los propios nodos de apoyo (N).
+
+    CalculiX la suma a la reacción: el total RF de NAPOYOS vale −carga total +
+    esta carga. La de gravedad es la consistente: ∫ ρ·g·t·Nᵢ dA en láminas y
+    almas, y ρ·g·A·L repartido (1/6, 2/3, 1/6) o (1/2, 1/2) en vigas. En
+    elementos cuadráticos la de una esquina va hacia arriba."""
+    supp = set(fe.nsets.get("NAPOYOS", []))
+    thick = {child: (name, t) for name, t in fe.shells for child in fe.elsets.get(name, [name])}
+    sections = {name: a * b for name, (a, b), _n in fe.beams}
+    weight = 0.0
+    for etype, elset, conns in fe.blocks:
+        for conn in conns:
+            if supp.isdisjoint(conn):
+                continue
+            if elset in thick:
+                parent, t = thick[elset]
+                nodal = fe.nodal_thickness if parent == "ECASCARON" else {}
+                for n, a in element_terms(etype, [fe.nodes[v] for v in conn]):
+                    tk = sum(ni * nodal[v] for ni, v in zip(n, conn)) if nodal else t
+                    share = sum(ni for ni, v in zip(n, conn) if v in supp)
+                    weight += rho * GRAVITY * tk * math.sqrt(_dot(a, a)) * share
+            elif elset in sections:
+                w = rho * GRAVITY * sections[elset] * math.dist(fe.nodes[conn[0]], fe.nodes[conn[-1]])
+                shares = (1 / 6, 2 / 3, 1 / 6) if len(conn) == 3 else (0.5, 0.5)
+                weight += w * sum(s for s, v in zip(shares, conn) if v in supp)
+    out = {}
+    for case in fe.cases:
+        vec = [sum(f[i] for v, f in case.forces.items() if v in supp) for i in range(3)]
+        vec[2] -= case.gravity * weight
+        out[case.name] = vec
+    return out
 
 
 def _compact(fe: FEModel) -> None:
@@ -530,8 +575,8 @@ def _fe_checks(fe: FEModel, p, report, grid_modules, th) -> list[dict]:
         out.append(_c("WARNING", "FEA_MECHANISM",
                       f"Los apoyos dejan {s['rigid_body_modes']} movimiento(s) de sólido rígido sin impedir: el "
                       "modelo es un mecanismo y el programa no podrá resolverlo. Por ejemplo, dos apoyos "
-                      "articulados puntuales permiten girar alrededor de la recta que los une. Usa apoyos "
-                      "empotrados, más apoyos, una huella mayor o columnas empotradas."))
+                      "articulados permiten girar alrededor de la recta que los une. Usa apoyos empotrados, "
+                      "más apoyos o columnas empotradas."))
     if s["components"] > 1:
         out.append(_c("WARNING", "FEA_DISCONNECTED", f"El modelo tiene {s['components']} partes sin conectar."))
     if report is not None:
@@ -553,6 +598,10 @@ def _fe_checks(fe: FEModel, p, report, grid_modules, th) -> list[dict]:
     if not (p["fea_dead_load"] or p["fea_live_load"] or p["fea_pressure"]):
         out.append(_c("INFO", "FEA_ONLY_SELF_WEIGHT", "Sólo hay peso propio: introduce la carga muerta adicional "
                                                       "y la carga viva de tu normativa."))
+    if any(name.startswith("NS_") and last == 3 for name, _first, last in fe.boundary):
+        out.append(_c("INFO", "FEA_PINNED_POINT", "Cada apoyo articulado es un nodo del cascarón (una articulación "
+                                                  "real): la reacción se concentra en un punto, así que las "
+                                                  "tensiones junto al apoyo no son representativas."))
     if any(n.startswith("NB_") for n in fe.nsets):
         out.append(_c("INFO", "FEA_COLUMN_HEAD", "Cada columna se une al cascarón en un nodo: las tensiones "
                                                  "locales alrededor de la cabeza no son representativas."))
@@ -594,10 +643,14 @@ def to_inp(fe: FEModel, title: str) -> str:
     comment(DISCLAIMER)
     comment("Unidades: N, m, kg, s, Pa. Z vertical; normal de la lamina hacia +Z (extrados). "
             "Calcular con: ccx -i <archivo sin .inp>")
-    comment("Totales de carga por paso (kN). Las reacciones RF de NAPOYOS (*NODE PRINT, TOTALS) deben "
-            "valer lo mismo con signo contrario:")
+    comment("Totales de carga por paso (kN) y reaccion RF esperada en NAPOYOS (*NODE PRINT, TOTALS). "
+            "CalculiX suma a la reaccion la carga aplicada en los propios nodos de apoyo, asi que "
+            "RF = -carga + esa carga:")
+    on_supports = fe.summary.get("support_loads_kN", {})
     for name, vec in fe.summary["totals_kN"].items():
-        comment(f"  {name}: Fx={vec[0]:.3f} Fy={vec[1]:.3f} Fz={vec[2]:.3f}")
+        rf = [s - c for s, c in zip(on_supports.get(name, (0.0, 0.0, 0.0)), vec)]
+        comment(f"  {name}: carga Fx={vec[0]:.3f} Fy={vec[1]:.3f} Fz={vec[2]:.3f}; "
+                f"RF Fx={rf[0]:.3f} Fy={rf[1]:.3f} Fz={rf[2]:.3f}")
     for ch in fe.checks:
         comment(f"[{ch['level']}] {ch['message']}")
 

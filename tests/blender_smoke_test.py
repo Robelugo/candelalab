@@ -643,7 +643,9 @@ def main():
             fh.write(frd_text(nodes, steps))
         with open(frd_path[:-4] + ".dat", "w", encoding="ascii") as fh:
             fh.write(dat_text(buckling=[[8.0, 9.5], [7.0, 7.5]],
-                              totals=[[-1000 * c for c in fe.summary["totals_kN"][st]] for st in static]))
+                              totals=[[1000 * (sp - c) for sp, c in zip(fe.summary["support_loads_kN"][st],
+                                                                        fe.summary["totals_kN"][st])]
+                                      for st in static]))
         draw_all_panels(rob, "sin resultados")
         check(bpy.ops.candela.fea_load(filepath=frd_path) == {'FINISHED'}, "resultados: cargar el .frd (salida 3D)")
         mesh = rob.data

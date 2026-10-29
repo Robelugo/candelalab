@@ -1,4 +1,4 @@
-# CandelaLab 0.13 — Diseñador paramétrico de cascarones laminares para Blender
+# CandelaLab 0.14 — Diseñador paramétrico de cascarones laminares para Blender
 
 Tres familias de cascarón, todas totalmente paramétricas:
 
@@ -22,7 +22,8 @@ puntales hasta el desplante, tipos de pieza y corte de madera comercial, exporta
 
 También se exporta como **modelo de elementos finitos** para CalculiX o Abaqus: lámina con nodos
 sobre la superficie exacta, apoyos, columnas, vigas de borde, cargas, combinaciones y pandeo lineal.
-CandelaLab prepara el modelo; no lo resuelve. Los resultados de CalculiX (`.frd`) se cargan de vuelta
+CandelaLab prepara el modelo; no lo resuelve: se calcula con CalculiX (probado con la versión 2.23).
+Los resultados (`.frd`) se cargan de vuelta
 sobre el cascarón: colores por cara, esfuerzos por metro (N y M), las direcciones principales de N
 dibujadas sobre la superficie, deformada, modos de pandeo y cotejo de reacciones.
 
@@ -58,7 +59,7 @@ Arquitectura, matemática y hoja de ruta: [docs/ARQUITECTURA.md](docs/ARQUITECTU
 ## Instalar
 
 1. Blender > *Edit > Preferences > Get Extensions* > menú ⌄ (arriba a la derecha) > **Install from Disk…**
-2. Elige `dist/candelalab-0.13.0.zip`. Queda instalado y activado; reemplaza cualquier versión anterior.
+2. Elige `dist/candelalab-0.14.0.zip`. Queda instalado y activado; reemplaza cualquier versión anterior.
 
 Para desarrollo, sin reinstalar después de cada cambio: copia o enlaza la carpeta `candelalab/` en
 la carpeta de extensiones de usuario (`.../extensions/user_default/candelalab`) y usa
@@ -301,7 +302,9 @@ de 18 m de radio (unas 1000 tablas).
 El panel **Análisis (FEA)** arma la entrada de un análisis y la exporta en formato CalculiX/Abaqus
 (`.inp`). [CalculiX](http://www.calculix.de) es libre; PrePoMax lo abre con interfaz gráfica. Para
 calcular: `ccx -i modelo` (sin la extensión). Los resultados quedan en `modelo.frd` y las
-reacciones en `modelo.dat`. El JSON puede incluir el mismo modelo (casilla *Incluir modelo FEA*).
+reacciones en `modelo.dat`. El JSON puede incluir el mismo modelo (casilla *Incluir modelo FEA*). En
+Windows, una forma de instalarlo sin permisos de administrador es el paquete `calculix` de
+conda-forge, por ejemplo con micromamba.
 
 **Malla.** Lámina en la superficie media:
 
@@ -313,11 +316,13 @@ reacciones en `modelo.dat`. El JSON puede incluir el mismo modelo (casilla *Incl
 Hay un refinamiento de 1 a 4 sobre las divisiones del cascarón. El espesor es constante con espesor
 normal; con espesor vertical se escribe por nodo como t·cos α (primer orden).
 
-**Apoyos**, tomados de *Concepto estructural*. Cada apoyo restringe los nodos de su huella (el
-cuadrado de lado *Tamaño*):
+**Apoyos**, tomados de *Concepto estructural*:
 
-* Articulado: traslaciones.
-* Empotrado: traslaciones y giros.
+* Articulado: las traslaciones del nodo más cercano al centro del apoyo. Es una articulación real.
+  Impedir las traslaciones de varios nodos de una huella impediría también el giro: en una franja de
+  prueba resuelta con CalculiX, una huella de 0,3 m daba a media luz el 39 % del momento de una
+  articulación, y menos al refinar la malla.
+* Empotrado: traslaciones y giros de los nodos de su huella (el cuadrado de lado *Tamaño*).
 * Columna: viga vertical B32/B31 hasta el desplante, empotrada o articulada en la base, o sin
   columna (empotra la huella).
 
@@ -342,21 +347,24 @@ paso `*BUCKLE`.
 
 **Comprobaciones** (geométricas, antes de calcular):
 
-* **Mecanismo**: cuántos movimientos de sólido rígido dejan libres los apoyos. Dos apoyos articulados
-  puntuales, por ejemplo, permiten girar alrededor de la recta que los une. Un paraguas con la
-  columna articulada en la base tiene 3.
+* **Mecanismo**: cuántos movimientos de sólido rígido dejan libres los apoyos. Dos apoyos articulados,
+  por ejemplo, permiten girar alrededor de la recta que los une: una hypar sobre sus dos esquinas
+  bajas necesita apoyos o columnas empotrados. Un paraguas con la columna articulada en la base
+  tiene 3.
 * **Conectividad** del modelo.
 * **Peso del modelo frente al analítico.**
-* **Totales de cada caso**: van en el panel y en la cabecera del `.inp`; las reacciones del `.dat`
-  (`*NODE PRINT, TOTALS=ONLY`) deben valer lo mismo con signo contrario.
+* **Totales de cada caso**: van en el panel y en la cabecera del `.inp`. La cabecera da también la
+  reacción RF que debe dar el `.dat` (`*NODE PRINT, TOTALS=ONLY`). CalculiX suma a la reacción la
+  carga aplicada sobre los propios nodos de apoyo, así que RF = −carga + esa carga. En elementos
+  cuadráticos la de una esquina va hacia arriba.
 
 **Límites.**
 
 * **Pandeo lineal**: sobreestima la carga crítica de un cascarón delgado, que es muy sensible a las
   imperfecciones. Sus factores no son una capacidad; hace falta un análisis no lineal con
   imperfecciones.
-* **Unión columna–cascarón**: es un nodo, así que las tensiones locales en la cabeza no son
-  representativas.
+* **Apoyos articulados y unión columna–cascarón**: son un nodo, así que las tensiones locales junto
+  a ellos no son representativas.
 * **Retículas**: se exporta un módulo.
 
 ### Resultados (.frd) sobre el cascarón
@@ -403,11 +411,15 @@ si existe, el `.dat` del mismo nombre.
     números nuevos, en las caras superior e inferior. Cada vértice del intradós y del extradós toma
     el nodo expandido más cercano, así que cada cara muestra su tensión, con la flexión.
   * 2D promedia en el espesor sobre los nodos originales: sólo membrana. Los nodos se asocian por
-    número y se comprueban sus coordenadas.
+    número y se comprueban sus coordenadas. En los nodos que la lámina comparte con el alma de una
+    viga o un nervio, CalculiX promedia ambos, así que ahí N no es la de la lámina. En el resto
+    coincide con la de la salida 3D.
 * **Pandeo**: el factor de cada modo sale del `.dat`, donde CalculiX siempre lo escribe, o, si no hay
-  `.dat`, del `.frd`. El modo se muestra normalizado (máximo 1).
-* **Reacciones**: las totales del `.dat` (`NAPOYOS`) se comparan con los totales de carga del modelo,
-  paso a paso.
+  `.dat`, del `.frd`. Antes de los modos, CalculiX escribe en el `.frd` el estado base del paso (la
+  solución estática bajo su carga): se salta. Si los factores del `.dat` y del `.frd` no coinciden,
+  se avisa. El modo se muestra normalizado (máximo 1).
+* **Reacciones**: las totales del `.dat` (`NAPOYOS`) se comparan, paso a paso, con las esperadas:
+  −carga + la carga aplicada en los propios nodos de apoyo, que CalculiX suma a la reacción.
 * **Validez**: los resultados quedan ligados a los parámetros. Si cambia algo que afecta al modelo
   (geometría, malla, apoyos, cargas), los colores, la deformada y las direcciones se ocultan y el panel
   lo indica. Los cambios de vista, cimbra o retícula no los invalidan; pasar de *Sólido* a *Superficie*
@@ -436,16 +448,19 @@ Con un segundo argumento (por ejemplo `-- docs cimbra`) sólo genera las imágen
 blender --factory-startup --python tests/blender_ui_test.py -- captura.png
 ```
 
-* La primera prueba valida el núcleo sin Blender (157 pruebas: 22 de la hypar, 13 de la bóveda, 9
+* La primera prueba valida el núcleo sin Blender (161 pruebas: 22 de la hypar, 13 de la bóveda, 9
   del corte inclinado, 11 del paraguas, 17 de la retícula, 4 de ellas de instanciación, 22 de la
-  cimbra, 16 del modelo FEA, 18 de la lectura de resultados, 12 de los rigidizadores, 8 de los
-  capiteles y 9 de las direcciones de N). La lectura de resultados se prueba
-  con archivos `.frd` y `.dat` sintéticos, escritos con los formatos documentados de CalculiX
+  cimbra, 17 del modelo FEA, 19 de la lectura de resultados, 12 de los rigidizadores, 8 de los
+  capiteles, 9 de las direcciones de N y 2 con CalculiX real). La lectura de resultados se prueba
+  con archivos `.frd` y `.dat` sintéticos con la disposición de CalculiX 2.23
   (`tests/frd_fixture.py`). Comprueba:
   * columnas fijas con números pegados («1-1.23450E-03»), formato corto y continuaciones;
   * la salida 2D por número de nodo y la 3D por cercanía (cada cara con su valor);
   * los pasos, los modos de pandeo y los factores del `.dat`;
-  * el cotejo de reacciones, el rechazo de resultados de otra geometría y los tensores principales;
+  * que el estado base de un paso de pandeo no se tome por un modo, la disposición con `1PMODE` de
+    otros programas y el aviso si los factores del `.dat` y del `.frd` difieren;
+  * el cotejo de reacciones (con la carga de los nodos de apoyo), el rechazo de resultados de otra
+    geometría y los tensores principales;
   * N y M exactos, con sus principales, a partir de caras con membrana y flexión conocidas en los ejes
     locales de cada punto;
   * que la salida 2D dé N sin M, y el CSV.
@@ -459,18 +474,30 @@ blender --factory-startup --python tests/blender_ui_test.py -- captura.png
   * el recorte en el borde y en una esquina, la escala automática y la fija, y los casos sin dibujo
     (pandeo, N nula, N₂ = 0).
 
-  No ha podido probarse con un `.frd` real de CalculiX. En el modelo FEA relee el `.inp` con un lector propio,
-  independiente del escritor, y comprueba:
+  En el modelo FEA relee el `.inp` con un lector propio, independiente del escritor, y comprueba:
   * que los nodos (también los intermedios) estén sobre la superficie media exacta;
   * el número de nodos y elementos, la orientación, que no haya nodos sueltos y las referencias a
     conjuntos;
   * que cada paso lleve exactamente los totales de su caso (q·área, q·planta, la mitad, presión =
     p·área proyectada, combinaciones);
   * el espesor por nodo, la detección de mecanismos, la columna, el alma de las vigas, la bóveda con
-    triángulos en la clave, la retícula y el JSON.
+    triángulos en la clave, la retícula y el JSON;
+  * que un apoyo articulado sea un solo nodo, y la carga que cae sobre los propios nodos de apoyo:
+    una placa con solución cerrada en S4 y en S8R, y la base de una columna B32.
 
-  No hay un solver CalculiX en el equipo donde se desarrolló: el formato sigue la sintaxis de
-  CalculiX/Abaqus, pero no se ha ejecutado con él.
+  Las pruebas con CalculiX real (`tests/test_calculix.py`) exportan, calculan con `ccx` y leen los
+  resultados. Se saltan si no hay CalculiX: `ccx` en el PATH, o su ruta en la variable
+  `CANDELALAB_CCX`. Con CalculiX 2.23 comprueban:
+  * una franja plana de 8 × 1 m apoyada en cuatro puntos, con elementos cuadráticos y lineales: el
+    momento total a media luz es el de la estática, W·L/8 (menos del 1 %), y la flecha la de una
+    viga (menos del 2 %);
+  * una hypar con vigas de borde bajo peso propio: en la zona central, Nxy es la de la membrana de
+    Pucher, q/(2k) (menos del 5 %), y N₁ es tracción según la diagonal de las esquinas altas
+    (45° ± 1°);
+  * las reacciones del `.dat`, los modos de pandeo (tantos como se pidieron, con los mismos factores
+    en el `.dat` y en el `.frd`) y la salida 2D frente a la 3D lejos de las vigas.
+
+  Validan la cadena exportación–cálculo–lectura, no un diseño.
 
   En la cimbra compara largos, largos de corte, giros, esviajes y holguras con sus
   fórmulas cerradas en z = 3 + 0.1·x·y. También comprueba que las tablas no se solapen, la simetría
@@ -534,11 +561,14 @@ blender --factory-startup --python tests/blender_ui_test.py -- captura.png
 * Las direcciones de N son cruces en puntos, no trayectorias continuas (isostáticas). En una retícula
   sólo se dibujan en el primer módulo. Un brazo recortado en el borde no muestra su longitud entera.
 * La lectura de `.frd` sólo admite el formato ASCII (el predeterminado), no el binario. Está probada
-  con archivos sintéticos que siguen el formato documentado, no con salidas reales de CalculiX: si
-  un `.frd` real no carga, el mensaje indica qué no coincide.
-* El modelo FEA no está resuelto ni validado con un solver en este desarrollo. El alma de las vigas
-  de borde va centrada bajo el borde (se ignora su desplazamiento en planta, medio ancho hacia
-  dentro). No se generan coeficientes de viento ni de nieve de ninguna normativa.
+  con CalculiX 2.23; otras versiones u otros programas pueden escribirlo de otra forma: si un `.frd`
+  no carga, el mensaje indica qué no coincide.
+* El modelo FEA sólo se ha resuelto con CalculiX en los casos de prueba: eso valida la cadena, no
+  cualquier modelo ni ningún diseño. El alma de las vigas de borde va centrada bajo el borde (se
+  ignora su desplazamiento en planta, medio ancho hacia dentro). No se generan coeficientes de viento
+  ni de nieve de ninguna normativa.
+* Con salida 2D, la N de los nodos compartidos con el alma de una viga o un nervio mezcla la lámina
+  con el alma: para leer esfuerzos ahí, usa la salida 3D (la predeterminada).
 * La regeneración tarda ~15 ms (paraguas), ~30 ms (hypar 32×32) y ~100 ms (bóveda de 8 lóbulos); es Python puro.
 * Con espesor normal y una referencia distinta del intradós, la parte superior de las vigas usa una
   aproximación de primer orden de la altura del intradós.

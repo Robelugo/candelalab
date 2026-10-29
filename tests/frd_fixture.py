@@ -1,10 +1,12 @@
-"""Archivos .frd y .dat sintéticos para las pruebas (no hay CalculiX en el equipo de desarrollo).
+"""Archivos .frd y .dat sintéticos para las pruebas sin CalculiX (tests/test_calculix.py usa el real).
 
 Siguen el formato documentado en el manual de CalculiX GraphiX («Result Format»):
     nodos      (1X,'   2','C',18X,I12,37X,I1) y (1X,'-1',I10,3E12.5)  (largo; corto: I5)
     resultados (1X,' 100','C',6A1,E12.5,I12,20A1,I2,I5,10A1,I2), (1X,I2,2X,8A1,2I5),
                (1X,I2,2X,8A1,5I5,8A1) y (1X,'-1',I10,6E12.5) con continuaciones '-2'
-y la disposición de 1PSTEP / 1PMODE que leen otros lectores (FreeCAD).
+Los pasos de pandeo van como los escribe CalculiX 2.23: sin 1PMODE, primero
+el estado base del paso (valor 0) y luego cada modo con su factor como valor.
+Con modes_layout=True usan la disposición con 1PMODE de otros programas.
 """
 
 
@@ -35,8 +37,9 @@ def frd_text(nodes, steps, fmt=1, elements=None):
             out.append(f"    1PSTEP{kode:25d}{1:12d}{kstep:12d}")
             if ds.get("mode"):
                 out.append(f"    1PMODE{ds['mode']:26d}")
+            ictype = ds.get("ictype", 2 if ds.get("mode") else 0)
             out.append(f"  100CL{100 + kode:5d}{ds.get('value', 1.0):12.5E}{len(ds['data']):12d}{'':20s}"
-                       f"{2 if ds.get('mode') else 0:2d}{kstep:5d}{'':10s}{fmt:2d}")
+                       f"{ictype:2d}{kstep:5d}{'':10s}{fmt:2d}")
             comps = ds["components"]
             out.append(f" -4  {ds['name']:8s}{len(comps) + (1 if ds['name'] == 'DISP' else 0):5d}{1:5d}")
             for k, c in enumerate(comps, 1):
@@ -64,7 +67,7 @@ def dat_text(buckling=(), totals=()):
     return "\n".join(out) + "\n"
 
 
-def synthetic(fe, nodes, disp, stress, buckling_factors=(2.5, 4.0)):
+def synthetic(fe, nodes, disp, stress, buckling_factors=(2.5, 4.0), modes_layout=False):
     """Pasos como los del modelo FE: estáticos con DISP/FORC/STRESS y modos de pandeo."""
     try:
         from core.fea import analysis_steps
@@ -79,8 +82,17 @@ def synthetic(fe, nodes, disp, stress, buckling_factors=(2.5, 4.0)):
                 {"name": "STRESS", "components": ["SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"],
                  "data": {n: stress(n, p, k) for n, p in nodes.items()}},
             ])
-        else:
+        elif modes_layout:
             steps.append([{"name": "DISP", "components": ["D1", "D2", "D3"], "mode": m, "value": f,
                            "data": {n: disp(n, p, k * 10 + m) for n, p in nodes.items()}}
                           for m, f in enumerate(buckling_factors, 1)])
+        else:
+            group = [{"name": "DISP", "components": ["D1", "D2", "D3"], "value": 0.0, "ictype": 4,
+                      "data": {n: disp(n, p, k) for n, p in nodes.items()}},       # estado base del paso
+                     {"name": "STRESS", "components": ["SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"], "value": 0.0,
+                      "ictype": 4, "data": {n: stress(n, p, k) for n, p in nodes.items()}}]
+            for m, f in enumerate(buckling_factors, 1):
+                group.append({"name": "DISP", "components": ["D1", "D2", "D3"], "value": f, "ictype": 4,
+                              "data": {n: disp(n, p, k * 10 + m) for n, p in nodes.items()}})
+            steps.append(group)
     return steps
