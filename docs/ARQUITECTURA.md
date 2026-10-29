@@ -167,6 +167,21 @@ exactamente reglada y el espesor del concreto es constante.
   * Al probarlo se corrigieron dos fallos anteriores. La tolerancia de la asociación 3D ahora usa el
     espesor mayor, el de los capiteles. Y la caché de resultados se invalida al cambiar entre sólido
     y superficie.
+* **v0.14 (hecho) Prueba con CalculiX real.** Primera vez que la cadena se resuelve con un solver
+  (CalculiX 2.23 de conda-forge, en Windows). `tests/test_calculix.py` exporta, calcula con `ccx` y lee
+  los resultados (se salta sin CalculiX). Encontró y corrigió tres fallos:
+  * **Apoyo articulado**: impedía las traslaciones de todos los nodos de la huella, lo que también
+    impide el giro. Ahora es el nodo más cercano al centro del apoyo, una articulación real. Se probó
+    el acoplamiento distribuido de CalculiX (`*DISTRIBUTING COUPLING`): articula bien, pero sus
+    reacciones RF salen asimétricas en un problema simétrico. El sólido rígido no se admite en nodos
+    de lámina.
+  * **Reacciones**: CalculiX suma a RF la carga aplicada en los propios nodos restringidos. `fea.py`
+    calcula esa carga (gravedad consistente en láminas, almas y vigas, y fuerzas nodales) y `frd.py`
+    la descuenta. Antes avisaba de diferencias de hasta el 1,6 % sin motivo.
+  * **Pandeo**: en un paso *BUCKLE, CalculiX escribe primero el estado base (valor 0) y luego los
+    modos, sin `1PMODE`. Se tomaba el estado base por el modo 1 y los factores quedaban desplazados.
+  * Además: con salida 2D, en los nodos compartidos con el alma de una viga, CalculiX promedia la
+    lámina con el alma; en el resto, la N de la salida 2D coincide con la de las dos caras de la 3D.
 * **Siguiente.** Por decidir. Candidatos: trayectorias continuas de N (isostáticas) y direcciones
   principales de M.
 * **v0.3 Cimbra y materiales.** Tablas reales a lo largo de las generatrices del intradós, vigas

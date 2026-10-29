@@ -5,7 +5,10 @@ Format»):
 * bloque «2C»: nodos, «-1» + número (I5 corto / I10 largo) + 3 × E12.5;
 * bloque «3C»: elementos (se ignoran: la conectividad es la del modelo exportado);
 * «1PSTEP» abre la salida de un paso (su último campo es el número de paso),
-  «1PMODE» la de un modo propio;
+  «1PMODE» la de un modo propio (otros programas). En un paso *BUCKLE,
+  CalculiX 2.23 no escribe «1PMODE»: primero va el estado base del paso (la
+  solución estática bajo su carga, con valor 0) y luego cada modo, con su
+  factor como valor. El estado base se salta;
 * «100C» abre un conjunto de resultados (su valor: tiempo o factor del modo),
   «-4» lo nombra (DISP, STRESS, FORC...), «-5» define cada componente y las
   líneas «-1»/«-2» llevan nodo y valores de 12 caracteres, que pueden ir
@@ -454,20 +457,25 @@ def load_results(frd: Frd, dat: dict | None, fe, display_plan, display_points, t
     reactions = []
     totals = (dat or {}).get("totals", [])
     static = [s for s in steps if s["kind"] == "STATIC"]
+    on_supports = fe.summary.get("support_loads_kN", {})
     for s, r in zip(static, totals):
         load = fe.summary["totals_kN"].get(s["name"])
         if load is None:
             continue
         rk = [x / 1000.0 for x in r]
+        # RF = −carga + la carga aplicada en los propios nodos de apoyo (CalculiX la suma a la reacción).
+        expected = [a - b for a, b in zip(on_supports.get(s["name"], (0.0, 0.0, 0.0)), load)]
         scale = max(1e-9, math.sqrt(sum(x * x for x in load)))
-        err = math.sqrt(sum((a + b) ** 2 for a, b in zip(rk, load))) / scale
-        reactions.append({"step": s["name"], "reaction_kN": rk, "load_kN": load, "rel_error": err})
+        err = math.sqrt(sum((a - b) ** 2 for a, b in zip(rk, expected))) / scale
+        reactions.append({"step": s["name"], "reaction_kN": rk, "expected_kN": expected, "load_kN": load,
+                          "rel_error": err})
     if totals and reactions:
         worst = max(r["rel_error"] for r in reactions)
         level = "INFO" if worst < 1e-3 else "WARNING"
         checks.append(_c(level, "FRD_REACTIONS",
-                         f"Reacciones totales del .dat frente a las cargas del modelo: diferencia máxima "
-                         f"{100 * worst:.3f} % en {len(reactions)} pasos."))
+                         f"Reacciones totales del .dat frente a las esperadas del modelo: diferencia máxima "
+                         f"{100 * worst:.3f} % de la carga en {len(reactions)} pasos. CalculiX suma a la "
+                         f"reacción la carga que cae sobre los propios nodos de apoyo, y se tiene en cuenta."))
     elif dat is None:
         checks.append(_c("INFO", "FRD_NO_DAT", "No se encontró el .dat junto al .frd: sin cotejo de reacciones y "
                                                "con los factores de pandeo tomados del .frd."))
@@ -503,8 +511,17 @@ def _organize(frd: Frd, dat, steps, checks) -> list[ResultItem]:
                                     stress[-1].data if stress else None))
         else:
             factors = dat_buckling.pop(0) if dat_buckling else []
-            for k, d in enumerate(disps):
+            modes = disps
+            if all(d.mode is None for d in disps):
+                # CalculiX escribe primero el estado base del paso (la solución estática bajo su carga, con
+                # valor 0) y después cada modo con su factor como valor.
+                modes = disps[next((k for k, d in enumerate(disps) if d.value != 0.0), 0):]
+            for k, d in enumerate(modes):
                 from_dat = k < len(factors)
+                if from_dat and d.value and abs(d.value - factors[k]) > 1e-4 * abs(factors[k]):
+                    checks.append(_c("WARNING", "FRD_BUCKLE_FACTORS",
+                                     f"{step['name']}, modo {k + 1}: el .dat da λ = {factors[k]:.6g} y el .frd "
+                                     f"{d.value:.6g}. ¿Son del mismo cálculo?"))
                 items.append(ResultItem(step["name"], step["title"], "BUCKLE", d.mode or k + 1,
                                         factors[k] if from_dat else d.value, ".dat" if from_dat else ".frd",
                                         d.data, None))

@@ -160,12 +160,18 @@ class TestOnTheShell(unittest.TestCase):
         steps = synthetic(fe, nodes, lambda n, p, k: [0.0, 0.0, uz(p[0], p[1], k)], lambda n, p, k: [0] * 6)
         text = frd_text(nodes, steps)
         static = [s["name"] for s in analysis_steps(fe) if s["kind"] == "STATIC"]
-        reactions = [[-1000 * c for c in fe.summary["totals_kN"][s]] for s in static]
+        # CalculiX: RF = −carga + la carga aplicada en los propios nodos de apoyo.
+        reactions = [[1000 * (sp - c) for sp, c in zip(fe.summary["support_loads_kN"][s], fe.summary["totals_kN"][s])]
+                     for s in static]
+        self.assertTrue(any(abs(fe.summary["support_loads_kN"][s][2]) > 1e-6 for s in static))
         dat = parse_dat(dat_text(buckling=[[11.0, 12.0], [21.0, 22.0]], totals=reactions))
         res = load_results(parse_frd(text), dat, fe, mesh.plan_points, mesh.vertices)
         modes = [it for it in res.items if it.kind == "BUCKLE"]
         self.assertEqual([(m.mode, m.factor, m.factor_source) for m in modes],
                          [(1, 11.0, ".dat"), (2, 12.0, ".dat"), (1, 21.0, ".dat"), (2, 22.0, ".dat")])
+        kb = next(k for k, s in enumerate(analysis_steps(fe), 1) if s["kind"] == "BUCKLE")
+        n0, p0 = next(iter(nodes.items()))
+        self.assertAlmostEqual(modes[0].disp[n0][2], uz(p0[0], p0[1], 10 * kb + 1), places=6)  # no el estado base
         k = res.items.index(modes[0])
         mags = [v for v in res.values(k, "DISP") if v is not None]
         self.assertAlmostEqual(max(mags), 1.0, places=12)                # modo normalizado
@@ -179,6 +185,25 @@ class TestOnTheShell(unittest.TestCase):
         bad = parse_dat(dat_text(totals=[[0.0, 0.0, 1.0]] * len(static)))
         warn = load_results(parse_frd(text), bad, fe, mesh.plan_points, mesh.vertices)
         self.assertEqual(next(c for c in warn.summary["checks"] if c["code"] == "FRD_REACTIONS")["level"], "WARNING")
+
+    def test_buckling_layouts_and_factor_mismatch(self):
+        # CalculiX 2.23 escribe el estado base del paso antes de los modos; otros programas, 1PMODE.
+        fe, mesh = setup(fea_output="2D")
+        nodes = {k: p for k, p in enumerate(fe.nodes, 1)}
+        texts = {}
+        for layout in (False, True):
+            steps = synthetic(fe, nodes, lambda n, p, k: [0.0, 0.0, uz(p[0], p[1], k)], lambda n, p, k: [0] * 6,
+                              modes_layout=layout)
+            texts[layout] = frd_text(nodes, steps)
+            res = load_results(parse_frd(texts[layout]), None, fe, mesh.plan_points, mesh.vertices)
+            self.assertEqual([(m.mode, m.factor) for m in res.items if m.kind == "BUCKLE"],
+                             [(1, 2.5), (2, 4.0)] * len(fe.buckling), layout)
+        self.assertNotIn("1PMODE", texts[False])
+        dat = parse_dat(dat_text(buckling=[[2.5, 4.4], [2.5, 4.0]]))
+        res = load_results(parse_frd(texts[False]), dat, fe, mesh.plan_points, mesh.vertices)
+        warn = [c for c in res.summary["checks"] if c["code"] == "FRD_BUCKLE_FACTORS"]
+        self.assertEqual(len(warn), 1)
+        self.assertIn("modo 2", warn[0]["message"])
 
     def test_incomplete_run(self):
         fe, mesh = setup(thickness_mode="VERTICAL")
