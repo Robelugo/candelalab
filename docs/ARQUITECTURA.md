@@ -182,6 +182,16 @@ exactamente reglada y el espesor del concreto es constante.
     modos, sin `1PMODE`. Se tomaba el estado base por el modo 1 y los factores quedaban desplazados.
   * Además: con salida 2D, en los nodos compartidos con el alma de una viga, CalculiX promedia la
     lámina con el alma; en el resto, la N de la salida 2D coincide con la de las dos caras de la 3D.
+* **v0.15 (hecho) Calcular desde Blender.** `core/ccx.py` (sin bpy) busca ccx, arma la orden (un
+  `.cmd`/`.bat` con `cmd /c`), lo lanza en segundo plano con su salida en `<trabajo>_ccx.log`, lee de
+  ahí el progreso («STEP n», «Job finished») y los `*ERROR`, y lo detiene con todo lo que haya lanzado
+  (`taskkill /T` en Windows, el grupo de procesos en los demás).
+  * `CANDELA_OT_fea_run`: con ventana es modal con un temporizador de 0,5 s, y Blender sigue
+    respondiendo; desde un script (`execute`) espera a que termine. No se lanza si hay un mecanismo.
+    Al terminar sólo carga si los parámetros siguen siendo los exportados.
+  * La ruta de ccx y los hilos van en las preferencias del complemento; la carpeta de cálculo, en
+    cada cascarón (no es un parámetro de diseño).
+  * Abrir otro archivo, salir de Blender o desactivar el complemento detiene los cálculos en curso.
 * **Siguiente.** Por decidir. Candidatos: trayectorias continuas de N (isostáticas) y direcciones
   principales de M.
 * **v0.3 Cimbra y materiales.** Tablas reales a lo largo de las generatrices del intradós, vigas

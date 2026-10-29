@@ -10,4 +10,4 @@ La capa de Blender (props.py, build.py, operators.py, panels.py) sólo traduce
 entre las propiedades de la interfaz y estas funciones; nunca hace geometría.
 """
 
-SCHEMA_VERSION = "0.14.0"
+SCHEMA_VERSION = "0.15.0"

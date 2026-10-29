@@ -1,4 +1,4 @@
-# CandelaLab 0.14 — Diseñador paramétrico de cascarones laminares para Blender
+# CandelaLab 0.15 — Diseñador paramétrico de cascarones laminares para Blender
 
 Tres familias de cascarón, todas totalmente paramétricas:
 
@@ -22,9 +22,8 @@ puntales hasta el desplante, tipos de pieza y corte de madera comercial, exporta
 
 También se exporta como **modelo de elementos finitos** para CalculiX o Abaqus: lámina con nodos
 sobre la superficie exacta, apoyos, columnas, vigas de borde, cargas, combinaciones y pandeo lineal.
-CandelaLab prepara el modelo; no lo resuelve: se calcula con CalculiX (probado con la versión 2.23).
-Los resultados (`.frd`) se cargan de vuelta
-sobre el cascarón: colores por cara, esfuerzos por metro (N y M), las direcciones principales de N
+CandelaLab no resuelve el modelo: lo calcula CalculiX, que se instala aparte, con un botón desde
+Blender (probado con la versión 2.23). Los resultados (`.frd`) se cargan de vuelta sobre el cascarón: colores por cara, esfuerzos por metro (N y M), las direcciones principales de N
 dibujadas sobre la superficie, deformada, modos de pandeo y cotejo de reacciones.
 
 Probado en Blender **4.5.9 LTS** y **5.1.1**; requiere Blender ≥ 4.2. Para saber tu versión:
@@ -59,7 +58,7 @@ Arquitectura, matemática y hoja de ruta: [docs/ARQUITECTURA.md](docs/ARQUITECTU
 ## Instalar
 
 1. Blender > *Edit > Preferences > Get Extensions* > menú ⌄ (arriba a la derecha) > **Install from Disk…**
-2. Elige `dist/candelalab-0.14.0.zip`. Queda instalado y activado; reemplaza cualquier versión anterior.
+2. Elige `dist/candelalab-0.15.0.zip`. Queda instalado y activado; reemplaza cualquier versión anterior.
 
 Para desarrollo, sin reinstalar después de cada cambio: copia o enlaza la carpeta `candelalab/` en
 la carpeta de extensiones de usuario (`.../extensions/user_default/candelalab`) y usa
@@ -299,12 +298,31 @@ de 18 m de radio (unas 1000 tablas).
 
 ## El modelo de elementos finitos en breve
 
-El panel **Análisis (FEA)** arma la entrada de un análisis y la exporta en formato CalculiX/Abaqus
-(`.inp`). [CalculiX](http://www.calculix.de) es libre; PrePoMax lo abre con interfaz gráfica. Para
-calcular: `ccx -i modelo` (sin la extensión). Los resultados quedan en `modelo.frd` y las
-reacciones en `modelo.dat`. El JSON puede incluir el mismo modelo (casilla *Incluir modelo FEA*). En
-Windows, una forma de instalarlo sin permisos de administrador es el paquete `calculix` de
-conda-forge, por ejemplo con micromamba.
+El panel **Análisis (FEA)** arma la entrada de un análisis en formato CalculiX/Abaqus (`.inp`).
+[CalculiX](http://www.calculix.de) es libre y CandelaLab no lo incluye. En Windows, una forma de
+instalarlo sin permisos de administrador es el paquete `calculix` de conda-forge, por ejemplo con
+micromamba.
+
+**Calcular con CalculiX** exporta el modelo, lo calcula y carga los resultados al terminar:
+
+* **Dónde está CalculiX**: en *Preferencias > Complementos > CandelaLab*, la ruta de `ccx` o de un
+  `.cmd`/`.bat` que lo lance (por ejemplo, uno que añada al PATH las bibliotecas de un entorno de
+  conda). Vacía, se busca en la variable `CANDELALAB_CCX` y `ccx` en el PATH. Ahí se eligen también
+  los hilos (0 = todos los núcleos).
+* **Carpeta de cálculo** (en el panel): por defecto `//candelalab_fea`, junto al `.blend`. Sin
+  guardar el `.blend` se usa la carpeta temporal del sistema. El trabajo se llama como el objeto:
+  `Hypar.inp`, `Hypar.frd`, `Hypar.dat` y la salida de consola en `Hypar_ccx.log`. Antes de calcular
+  se borran el `.frd` y el `.dat` anteriores de ese trabajo, para no leerlos por error.
+* **Mientras calcula**, Blender sigue respondiendo. El panel muestra el paso y el tiempo, y
+  *Detener* para CalculiX. Un cascarón sólo tiene un cálculo a la vez; abrir otro archivo o salir de
+  Blender detiene los que estén en curso.
+* **No se lanza** si los apoyos dejan un mecanismo. Si CalculiX falla, se muestra su primer
+  `*ERROR` y dónde está la salida completa. Si los datos del modelo cambian durante el cálculo,
+  los resultados no se cargan (quedan en la carpeta).
+
+También se puede exportar el `.inp` y calcularlo aparte: `ccx -i modelo` (sin la extensión) deja
+los resultados en `modelo.frd` y las reacciones en `modelo.dat`. PrePoMax lo abre con interfaz
+gráfica. El JSON puede incluir el mismo modelo (casilla *Incluir modelo FEA*).
 
 **Malla.** Lámina en la superficie media:
 
@@ -369,8 +387,8 @@ paso `*BUCKLE`.
 
 ### Resultados (.frd) sobre el cascarón
 
-Después de calcular, *Cargar resultados (.frd)* en el panel **Resultados (FEA)** lee el `.frd` y,
-si existe, el `.dat` del mismo nombre.
+*Calcular con CalculiX* los carga solo. Si calculaste aparte, *Cargar resultados (.frd)* en el panel
+**Resultados (FEA)** lee el `.frd` y, si existe, el `.dat` del mismo nombre.
 
 * **Qué se muestra**: el paso o modo de pandeo y la magnitud. Hay desplazamiento |U| y vertical
   (mm), von Mises, y tensión principal máxima y mínima (MPa, tracción positiva). Los colores van en
@@ -448,10 +466,11 @@ Con un segundo argumento (por ejemplo `-- docs cimbra`) sólo genera las imágen
 blender --factory-startup --python tests/blender_ui_test.py -- captura.png
 ```
 
-* La primera prueba valida el núcleo sin Blender (161 pruebas: 22 de la hypar, 13 de la bóveda, 9
+* La primera prueba valida el núcleo sin Blender (165 pruebas: 22 de la hypar, 13 de la bóveda, 9
   del corte inclinado, 11 del paraguas, 17 de la retícula, 4 de ellas de instanciación, 22 de la
   cimbra, 17 del modelo FEA, 19 de la lectura de resultados, 12 de los rigidizadores, 8 de los
-  capiteles, 9 de las direcciones de N y 2 con CalculiX real). La lectura de resultados se prueba
+  capiteles, 9 de las direcciones de N y 6 de la ejecución de CalculiX, 3 de ellas con CalculiX
+  real). La lectura de resultados se prueba
   con archivos `.frd` y `.dat` sintéticos con la disposición de CalculiX 2.23
   (`tests/frd_fixture.py`). Comprueba:
   * columnas fijas con números pegados («1-1.23450E-03»), formato corto y continuaciones;
@@ -495,9 +514,13 @@ blender --factory-startup --python tests/blender_ui_test.py -- captura.png
     Pucher, q/(2k) (menos del 5 %), y N₁ es tracción según la diagonal de las esquinas altas
     (45° ± 1°);
   * las reacciones del `.dat`, los modos de pandeo (tantos como se pidieron, con los mismos factores
-    en el `.dat` y en el `.frd`) y la salida 2D frente a la 3D lejos de las vigas.
+    en el `.dat` y en el `.frd`) y la salida 2D frente a la 3D lejos de las vigas;
+  * el cálculo en segundo plano, como el del botón: progreso y fin en la salida de consola, y que
+    *Detener* pare también el `ccx` que lanza un `.cmd`.
 
-  Validan la cadena exportación–cálculo–lectura, no un diseño.
+  Validan la cadena exportación–cálculo–lectura, no un diseño. Sin CalculiX comprueban los nombres
+  de trabajo, las órdenes (un `.cmd` con `cmd /c`), los hilos, el borrado de resultados anteriores y
+  la lectura del progreso y de los `*ERROR` de su salida.
 
   En la cimbra compara largos, largos de corte, giros, esviajes y holguras con sus
   fórmulas cerradas en z = 3 + 0.1·x·y. También comprueba que las tablas no se solapen, la simetría
@@ -531,7 +554,10 @@ blender --factory-startup --python tests/blender_ui_test.py -- captura.png
     sobre las caras, el primer módulo de la retícula (real e instanciada) y el modo de pandeo sin
     esfuerzos;
   * que se reasocien al pasar a *Superficie*;
-  * que se oculten al cambiar la geometría y vuelvan al restaurarla.
+  * que se oculten al cambiar la geometría y vuelvan al restaurarla;
+  * *Calcular con CalculiX*: sin CalculiX lo dice y no hace nada; un mecanismo no se lanza; el
+    progreso, *Detener* y que no haya dos cálculos a la vez; las preferencias. Con CalculiX
+    (`CANDELALAB_CCX` o `ccx` en el PATH), calcula y carga los resultados.
 
   También: operadores, actualización en
   vivo, tipos predefinidos, variantes, exportar e importar, duplicados y persistencia en el

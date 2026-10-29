@@ -744,6 +744,60 @@ def main():
         bpy.ops.candela.fea_clear()
         check(not rs.fea_results_summary and mesh.color_attributes.get("candela_fea") is None
               and build.find_child(rob, build.ROLE_DIRECTIONS) is None, "resultados: quitar")
+
+        # Calcular con CalculiX desde Blender. Sin ventana, el operador espera a que termine.
+        from types import SimpleNamespace
+        from candelalab import operators
+        from candelalab.core import ccx as ccx_mod
+        from candelalab.props import CANDELA_AP_preferences
+
+        def run_error():
+            try:
+                bpy.ops.candela.fea_run()
+            except RuntimeError as exc:  # un operador que informa un error lanza RuntimeError desde Python
+                return str(exc)
+            return ""
+
+        find = ccx_mod.find_ccx
+        try:
+            ccx_mod.find_ccx = lambda configured="": None
+            check("No se encontró CalculiX" in run_error() and not rs.fea_results_summary,
+                  "calcular: sin CalculiX lo dice y no hace nada")
+            ccx_mod.find_ccx = lambda configured="": "ccx-que-no-se-lanza"
+            rs.support_layout, rs.support_type = 'LOW_CORNERS', 'PINNED'
+            check("sólido rígido" in run_error() and not operators._runs, "calcular: un mecanismo no se lanza")
+            rs.support_layout, rs.support_type = 'ALL_CORNERS', 'FIXED'
+        finally:
+            ccx_mod.find_ccx = find
+        prefs = SimpleNamespace(layout=FakeLayout(), bl_rna=CANDELA_AP_preferences.bl_rna, ccx_path="", ccx_threads=0)
+        try:
+            CANDELA_AP_preferences.draw(prefs, bpy.context)
+            check(True, "preferencias: se dibujan")
+        except Exception as exc:  # noqa: BLE001
+            check(False, f"preferencias: se dibujan ({exc})")
+        # Mientras calcula: el panel muestra el progreso y «Detener», y no se puede lanzar otro.
+        operators._runs[rob.name] = operators._Run(rob.name, None, None, tempfile.gettempdir(), "nada", "", 9,
+                                                   time.monotonic())
+        try:
+            check(operators.run_status(rob).startswith("Calculando: paso 1 de 9")
+                  and not bpy.ops.candela.fea_run.poll() and bpy.ops.candela.fea_stop() == {'FINISHED'}
+                  and operators._runs[rob.name].cancel, "calcular: progreso, sin dos a la vez, detener")
+            draw_all_panels(rob, "calculando")
+        finally:
+            operators._runs.clear()
+        if find():
+            t0 = time.time()
+            res = bpy.ops.candela.fea_run()
+            summary = json.loads(rs.fea_results_summary or "{}")
+            folder = operators.work_dir(rs)[0]
+            check(res == {'FINISHED'} and summary.get("output") == "3D" and build.fea_results_current(rob)
+                  and any(c["code"] == "FRD_REACTIONS" and c["level"] == "INFO" for c in summary["checks"])
+                  and os.path.exists(os.path.join(folder, ccx_mod.job_name(rob.name) + ".frd"))
+                  and folder.startswith(tempfile.gettempdir()),
+                  f"calcular: CalculiX real, resultados cargados ({time.time() - t0:.1f} s)")
+            draw_all_panels(rob, "calculado con CalculiX")
+        else:
+            print("  --  calcular con CalculiX real: omitido (sin CalculiX; define CANDELALAB_CCX)")
         bpy.ops.candela.delete()
 
         # Guardar y reabrir .blend
