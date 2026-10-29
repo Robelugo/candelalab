@@ -1,4 +1,4 @@
-# CandelaLab 0.12 — Diseñador paramétrico de cascarones laminares para Blender
+# CandelaLab 0.13 — Diseñador paramétrico de cascarones laminares para Blender
 
 Tres familias de cascarón, todas totalmente paramétricas:
 
@@ -23,8 +23,8 @@ puntales hasta el desplante, tipos de pieza y corte de madera comercial, exporta
 También se exporta como **modelo de elementos finitos** para CalculiX o Abaqus: lámina con nodos
 sobre la superficie exacta, apoyos, columnas, vigas de borde, cargas, combinaciones y pandeo lineal.
 CandelaLab prepara el modelo; no lo resuelve. Los resultados de CalculiX (`.frd`) se cargan de vuelta
-sobre el cascarón: colores por cara, esfuerzos por metro (N y M), deformada, modos de pandeo y cotejo
-de reacciones.
+sobre el cascarón: colores por cara, esfuerzos por metro (N y M), las direcciones principales de N
+dibujadas sobre la superficie, deformada, modos de pandeo y cotejo de reacciones.
 
 Probado en Blender **4.5.9 LTS** y **5.1.1**; requiere Blender ≥ 4.2. Para saber tu versión:
 *Ayuda > Acerca de*, o en la consola de Python de Blender: `bpy.app.version_string`.
@@ -58,7 +58,7 @@ Arquitectura, matemática y hoja de ruta: [docs/ARQUITECTURA.md](docs/ARQUITECTU
 ## Instalar
 
 1. Blender > *Edit > Preferences > Get Extensions* > menú ⌄ (arriba a la derecha) > **Install from Disk…**
-2. Elige `dist/candelalab-0.12.0.zip`. Queda instalado y activado; reemplaza cualquier versión anterior.
+2. Elige `dist/candelalab-0.13.0.zip`. Queda instalado y activado; reemplaza cualquier versión anterior.
 
 Para desarrollo, sin reinstalar después de cada cambio: copia o enlaza la carpeta `candelalab/` en
 la carpeta de extensiones de usuario (`.../extensions/user_default/candelalab`) y usa
@@ -378,9 +378,26 @@ si existe, el `.dat` del mismo nombre.
   * con salida 2D hay N pero no M, porque CalculiX ya promedió en el espesor.
 
   *Exportar N y M (CSV)* escribe, para el resultado elegido, una fila por nodo de la lámina con
-  posición, espesor y los diez esfuerzos.
+  posición, espesor, los diez esfuerzos y el ángulo θN1 de la dirección de N₁ (desde x hacia y).
+* **Direcciones principales de N**: cruces sobre el cascarón, en el objeto hijo «Direcciones de N».
+  * Cada cruz tiene un brazo según la dirección de N₁ y otro según la de N₂, que son perpendiculares,
+    de longitud proporcional a |N|. θ₁ = ½·atan2(2·Nxy, Nx − Ny) en los ejes locales.
+  * Tracción en rojo con puntas hacia fuera; compresión en azul con puntas hacia dentro. La forma
+    distingue el signo aunque no se vea el color. Sobre el mapa de color se leen peor: para verlas
+    con claridad, desactiva *Colorear el cascarón*.
+  * Hay una cruz por celda de una rejilla en planta, en el nodo más cercano al centro de la celda.
+    *Separación* es el lado de la celda (0 = 1/16 del lado mayor de la planta).
+  * *kN/m por metro* fija la escala (0 = automática: el brazo mayor mide el 90 % de la separación).
+    Fíjala para comparar dos resultados. La leyenda indica la escala usada.
+  * Los brazos siguen la superficie: cada vértice es un punto del extradós y del intradós (con el
+    capitel), o de la superficie de referencia si la salida es *Superficie*, separado un cuarto del
+    espesor. No se hunden en un cascarón curvo ni al cruzar una lima. Se recortan en el borde de la
+    planta.
+  * No se dibujan los brazos con |N| menor que el 2 % del máximo (la leyenda dice cuántos). Los modos
+    de pandeo no traen esfuerzos.
 * **Deformada**: copia de un módulo desplazada, en el objeto hijo «Deformada». Con escala 0 el máximo
-  se dibuja como el 5 % del tamaño.
+  se dibuja como el 5 % del tamaño. En una retícula, la deformada y las direcciones se dibujan en el
+  primer módulo, el que se exporta.
 * **Salida 3D o 2D** (se elige al exportar, en el panel Análisis):
   * 3D es lo predeterminado en CalculiX para láminas. Escribe los nodos de la lámina expandida, con
     números nuevos, en las caras superior e inferior. Cada vértice del intradós y del extradós toma
@@ -392,8 +409,9 @@ si existe, el `.dat` del mismo nombre.
 * **Reacciones**: las totales del `.dat` (`NAPOYOS`) se comparan con los totales de carga del modelo,
   paso a paso.
 * **Validez**: los resultados quedan ligados a los parámetros. Si cambia algo que afecta al modelo
-  (geometría, malla, apoyos, cargas), los colores y la deformada se ocultan y el panel lo indica. Los
-  cambios de vista, cimbra o retícula no los invalidan. Si los vértices del cascarón no encuentran
+  (geometría, malla, apoyos, cargas), los colores, la deformada y las direcciones se ocultan y el panel
+  lo indica. Los cambios de vista, cimbra o retícula no los invalidan; pasar de *Sólido* a *Superficie*
+  vuelve a asociar los vértices. Si los vértices del cascarón no encuentran
   nodos en el `.frd`, la carga se rechaza: es de otra geometría.
 * **Archivos**: el `.frd` no se copia al `.blend`. Se guarda la ruta y se relee al cambiar de
   resultado tras abrir el archivo.
@@ -418,10 +436,10 @@ Con un segundo argumento (por ejemplo `-- docs cimbra`) sólo genera las imágen
 blender --factory-startup --python tests/blender_ui_test.py -- captura.png
 ```
 
-* La primera prueba valida el núcleo sin Blender (148 pruebas: 22 de la hypar, 13 de la bóveda, 9
+* La primera prueba valida el núcleo sin Blender (157 pruebas: 22 de la hypar, 13 de la bóveda, 9
   del corte inclinado, 11 del paraguas, 17 de la retícula, 4 de ellas de instanciación, 22 de la
-  cimbra, 16 del modelo FEA, 18 de la lectura de resultados, 12 de los rigidizadores y 8 de los
-  capiteles). La lectura de resultados se prueba
+  cimbra, 16 del modelo FEA, 18 de la lectura de resultados, 12 de los rigidizadores, 8 de los
+  capiteles y 9 de las direcciones de N). La lectura de resultados se prueba
   con archivos `.frd` y `.dat` sintéticos, escritos con los formatos documentados de CalculiX
   (`tests/frd_fixture.py`). Comprueba:
   * columnas fijas con números pegados («1-1.23450E-03»), formato corto y continuaciones;
@@ -431,6 +449,15 @@ blender --factory-startup --python tests/blender_ui_test.py -- captura.png
   * N y M exactos, con sus principales, a partir de caras con membrana y flexión conocidas en los ejes
     locales de cada punto;
   * que la salida 2D dé N sin M, y el CSV.
+
+  En las direcciones de N comprueba:
+  * que d₁ y d₂ diagonalicen el tensor, sean unitarias, tangentes y formen un triedro con la normal;
+  * una cruz por celda, en el nodo más cercano a su centro, con la rejilla centrada;
+  * los valores y el ángulo de un campo de membrana conocido, y el ángulo del CSV;
+  * que cada vértice esté exactamente en su cara más la separación (espesor vertical, salida
+    *Sólido* y *Superficie*), también bajo un capitel;
+  * el recorte en el borde y en una esquina, la escala automática y la fija, y los casos sin dibujo
+    (pandeo, N nula, N₂ = 0).
 
   No ha podido probarse con un `.frd` real de CalculiX. En el modelo FEA relee el `.inp` con un lector propio,
   independiente del escritor, y comprueba:
@@ -445,7 +472,7 @@ blender --factory-startup --python tests/blender_ui_test.py -- captura.png
   No hay un solver CalculiX en el equipo donde se desarrolló: el formato sigue la sintaxis de
   CalculiX/Abaqus, pero no se ha ejecutado con él.
 
-  En la cimbra compara largos, largos de corte, giros, esviajes y holguras con sus En la cimbra compara largos, largos de corte, giros, esviajes y holguras con sus
+  En la cimbra compara largos, largos de corte, giros, esviajes y holguras con sus
   fórmulas cerradas en z = 3 + 0.1·x·y. También comprueba que las tablas no se solapen, la simetría
   de tipos del paraguas, la viga única sobre cada lima, el corte comercial y los empalmes, la malla
   cerrada con el volumen de la madera, la retícula con un solo juego y el CSV. En la retícula comprueba el paso y
@@ -473,6 +500,10 @@ blender --factory-startup --python tests/blender_ui_test.py -- captura.png
   comprueba:
   * los colores y la flexión en cada cara, las reacciones y el factor de pandeo;
   * la deformada y la relectura del archivo;
+  * las direcciones de N: el hijo con sus materiales, la tracción uniaxial sin brazo de N₂, que vayan
+    sobre las caras, el primer módulo de la retícula (real e instanciada) y el modo de pandeo sin
+    esfuerzos;
+  * que se reasocien al pasar a *Superficie*;
   * que se oculten al cambiar la geometría y vuelvan al restaurarla.
 
   También: operadores, actualización en
@@ -500,6 +531,8 @@ blender --factory-startup --python tests/blender_ui_test.py -- captura.png
   usuario y su resistencia y rigidez no se verifican. Tampoco se ubican los empalmes sobre las vigas.
   Las tablas de los bordes, que pueden quedar de ancho parcial, se listan enteras. Las vigas de borde
   de concreto no se cimbran.
+* Las direcciones de N son cruces en puntos, no trayectorias continuas (isostáticas). En una retícula
+  sólo se dibujan en el primer módulo. Un brazo recortado en el borde no muestra su longitud entera.
 * La lectura de `.frd` sólo admite el formato ASCII (el predeterminado), no el binario. Está probada
   con archivos sintéticos que siguen el formato documentado, no con salidas reales de CalculiX: si
   un `.frd` real no carga, el mensaje indica qué no coincide.

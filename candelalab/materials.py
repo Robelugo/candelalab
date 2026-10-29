@@ -13,6 +13,9 @@ PALETTE = {
     "board": ("CandelaLab · Tabla", (0.80, 0.64, 0.42, 1.0), 0.8),
     "joist": ("CandelaLab · Viga de cimbra", (0.58, 0.40, 0.24, 1.0), 0.8),
     "prop": ("CandelaLab · Puntal", (0.46, 0.34, 0.24, 1.0), 0.8),
+    # Más oscuros que los extremos del mapa divergente, para verse también sobre él
+    "tension": ("CandelaLab · Tracción", (0.12, 0.002, 0.004, 1.0), 0.6),
+    "compression": ("CandelaLab · Compresión", (0.003, 0.01, 0.12, 1.0), 0.6),
 }
 
 

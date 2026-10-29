@@ -2,7 +2,7 @@
 
 Este módulo no contiene geometría: sólo traduce MeshData / Ruling a datablocks
 de Blender. El objeto del cascarón es dueño de objetos hijos auxiliares
-(generatrices, normales, apoyos, vigas, nervios, cimbra) que se identifican por la propiedad
+(generatrices, normales, apoyos, vigas, nervios, cimbra, resultados) que se identifican por la propiedad
 personalizada "candela_role" y se crean/borran según los parámetros.
 """
 
@@ -14,6 +14,7 @@ import traceback
 import bpy
 
 from . import instancing, materials
+from .core.directions import COMPRESSION, TENSION, direction_glyphs
 from .core.fea import fe_model_from_params
 from .core.frd import QUANTITIES, load_results, parse_dat, parse_frd, results_key
 from .core.frd import colors as result_colors
@@ -30,6 +31,7 @@ ROLE_PLACEMENTS = "PLACEMENTS"
 ROLE_RIBS = "RIBS"
 ROLE_FORMWORK = "FORMWORK"  # un juego de cimbra: nunca se instancia
 ROLE_DEFORMED = "DEFORMED"  # deformada de los resultados FEA (un módulo)
+ROLE_DIRECTIONS = "DIRECTIONS"  # cruces de las direcciones principales de N (un módulo)
 INSTANCEABLE = (ROLE_RULINGS, ROLE_NORMALS, ROLE_BEAMS, ROLE_RIBS)  # columnas nunca: cada una tiene su longitud
 ANALYSIS_ATTR = "candela_analysis"
 FEA_ATTR = "candela_fea"            # color del resultado mostrado
@@ -114,7 +116,10 @@ def rebuild(obj) -> Evaluation | None:
 
 # --- resultados FEA (.frd) --------------------------------------------------------------------
 
-_fea_cache: dict = {}  # nombre del objeto -> (clave, ruta, fecha, FeaResults): el .frd no se guarda en el .blend
+# nombre del objeto -> (clave, ruta, fecha, salida, FeaResults): el .frd no se guarda en el .blend. La salida
+# (sólido o superficie) no cambia el modelo FE pero sí la malla mostrada, así que obliga a reasociar.
+_fea_cache: dict = {}
+_dirs_cache: dict = {}  # nombre del objeto -> (FeaResults, clave, malla, leyenda) de las direcciones de N
 
 
 def load_fea_results(obj, path):
@@ -132,7 +137,7 @@ def load_fea_results(obj, path):
         s.fea_results_path = path
         s.fea_results_key = key
         s.fea_results_summary = json.dumps(res.summary)
-    _fea_cache[obj.name] = (key, path, os.path.getmtime(path), res)
+    _fea_cache[obj.name] = (key, path, os.path.getmtime(path), s.output, res)
     _set_quietly(s, "fea_result_item", "0")
     apply_fea_results(obj)
     return res
@@ -147,9 +152,10 @@ def _read_results(params, path):
         with open(dat_path, encoding="ascii", errors="replace") as fh:
             dat = parse_dat(fh.read())
     fe, _rep = fe_model_from_params(params)
-    module = evaluate({**params, "grid_count_x": 1, "grid_count_y": 1, "formwork_enabled": False,
-                       "show_rulings": False, "show_normals": False}).shell_mesh
-    return load_results(frd, dat, fe, module.plan_points, module.vertices)
+    ev = evaluate({**params, "grid_count_x": 1, "grid_count_y": 1, "formwork_enabled": False,
+                   "show_rulings": False, "show_normals": False})
+    module = ev.shell_mesh
+    return load_results(frd, dat, fe, module.plan_points, module.vertices, model=ev.model)
 
 
 def _set_quietly(settings, key, value):
@@ -163,6 +169,7 @@ def clear_fea_results(obj):
         for key in ("fea_results_path", "fea_results_key", "fea_results_summary", "fea_results_legend"):
             setattr(s, key, "")
     _fea_cache.pop(obj.name, None)
+    _dirs_cache.pop(obj.name, None)
     _clear_fea_display(obj)
 
 
@@ -172,7 +179,7 @@ def fea_results_current(obj) -> bool:
 
 
 def apply_fea_results(obj):
-    """Colorea el cascarón con el resultado elegido y dibuja la deformada.
+    """Colorea el cascarón con el resultado elegido y dibuja la deformada y las direcciones de N.
 
     Sólo si los resultados corresponden a los parámetros actuales; si no, se
     quita la vista (el panel lo indica). El .frd se relee si no está en memoria
@@ -223,6 +230,10 @@ def apply_fea_results(obj):
                                          s.fea_result_scale)
     else:
         remove_child(obj, ROLE_DEFORMED)
+    if s.fea_dirs_show:
+        legend["directions"] = _sync_directions(obj, res, item)
+    else:
+        remove_child(obj, ROLE_DIRECTIONS)
     mesh.update()
     s.fea_results_legend = json.dumps(legend)
 
@@ -232,12 +243,12 @@ def _cached_results(obj):
     path = s.fea_results_path
     hit = _fea_cache.get(obj.name)
     mtime = os.path.getmtime(path) if os.path.exists(path) else None
-    if hit is not None and hit[0] == s.fea_results_key and hit[1] == path and hit[2] == mtime:
-        return hit[3]
+    if hit is not None and hit[:4] == (s.fea_results_key, path, mtime, s.output):
+        return hit[4]
     if mtime is None:
         raise OSError("el archivo no existe")
     res = _read_results(settings_to_dict(s), path)
-    _fea_cache[obj.name] = (s.fea_results_key, path, mtime, res)
+    _fea_cache[obj.name] = (s.fea_results_key, path, mtime, s.output, res)
     return res
 
 
@@ -267,6 +278,7 @@ def _clear_fea_display(obj):
     if obj.data is not None:
         _remove_attrs(obj.data)
     remove_child(obj, ROLE_DEFORMED)
+    remove_child(obj, ROLE_DIRECTIONS)
 
 
 def _sync_deformed(obj, disp, cols, scale):
@@ -294,6 +306,53 @@ def _sync_deformed(obj, disp, cols, scale):
         _write_point_colors(child.data, FEA_ATTR, cols)
     child.data.update()
     return scale
+
+
+def _module_offset(obj, res):
+    """Traslación del módulo asociado a los resultados al primer módulo mostrado: el de la
+    retícula de geometría real, o la primera colocación de una retícula instanciada."""
+    offset = [0.0, 0.0, 0.0]
+    mesh = obj.data
+    if res.anchor is not None and len(mesh.vertices):
+        offset = [a - b for a, b in zip(mesh.vertices[0].co, res.anchor)]
+    points = find_child(obj, ROLE_PLACEMENTS)
+    if points is not None and len(points.data.vertices):
+        offset = [a + b for a, b in zip(offset, points.data.vertices[0].co)]
+    return offset
+
+
+def _sync_directions(obj, res, item) -> dict:
+    """Cruces de las direcciones principales de N en el primer módulo (hijo «Direcciones de N»).
+    Devuelve su leyenda, o el motivo por el que no hay."""
+    s = obj.candela
+    solid = s.output == 'SOLID'
+    # Separación de la cara: un cuarto del espesor más el error de cuerda de la malla mostrada
+    chord = report_of(obj).get("mesh", {}).get("chord_error_max")
+    lift = 0.25 * s.thickness + (chord if isinstance(chord, (int, float)) else 0.0)
+    key = (item, solid, s.fea_dirs_spacing, s.fea_dirs_scale, lift)
+    hit = _dirs_cache.get(obj.name)
+    if hit is not None and hit[0] is res and hit[1] == key:
+        md, info = hit[2], hit[3]
+    else:
+        md, info = direction_glyphs(res, item, solid, s.fea_dirs_spacing, s.fea_dirs_scale, lift)
+        _dirs_cache[obj.name] = (res, key, md, info)
+    if md is None:
+        remove_child(obj, ROLE_DIRECTIONS)
+        return info
+    ox, oy, oz = _module_offset(obj, res)
+    child = _ensure_child(obj, ROLE_DIRECTIONS, "Direcciones de N", 'MESH')
+    child.data.clear_geometry()
+    child.data.from_pydata([(x + ox, y + oy, z + oz) for x, y, z in md.vertices], [], md.faces)
+    materials.assign(child.data, ["tension", "compression"])
+    child.data.polygons.foreach_set("material_index", md.face_parts)
+    rgba = {TENSION: materials.PALETTE["tension"][1], COMPRESSION: materials.PALETTE["compression"][1]}
+    part = [TENSION] * len(md.vertices)
+    for face, p in zip(md.faces, md.face_parts):
+        for v in face:
+            part[v] = p
+    _write_point_colors(child.data, FEA_ATTR, [rgba[p] for p in part])  # «Ver mapa» también las muestra
+    child.data.update()
+    return info
 
 
 def _sync_instancing(obj, ev: Evaluation):
@@ -385,7 +444,7 @@ def remove_child(owner, role):
 
 def remove_all_children(owner):
     for role in (ROLE_RULINGS, ROLE_NORMALS, ROLE_SUPPORTS, ROLE_BEAMS, ROLE_RIBS, ROLE_PLACEMENTS, ROLE_FORMWORK,
-                 ROLE_DEFORMED):
+                 ROLE_DEFORMED, ROLE_DIRECTIONS):
         remove_child(owner, role)
 
 

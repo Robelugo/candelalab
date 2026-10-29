@@ -662,6 +662,42 @@ def main():
         mesh.attributes["candela_fea_valor"].data.foreach_get("value", vals)
         check(all(math.isfinite(v) and v > 0 for v in vals) and json.loads(rs.fea_results_legend)["section"],
               "esfuerzos: N₁ en todo el cascarón (tracción)")
+        rs.fea_dirs_show = True
+        dirs = build.find_child(rob, build.ROLE_DIRECTIONS)
+        info = json.loads(rs.fea_results_legend).get("directions", {})
+        check(dirs is not None and info.get("count", 0) > 20 and [m.name for m in dirs.data.materials]
+              == ["CandelaLab · Tracción", "CandelaLab · Compresión"], "direcciones de N: hijo con cruces")
+        mats = [0] * len(dirs.data.polygons)
+        dirs.data.polygons.foreach_get("material_index", mats)
+        # σxx global proyectada en el plano tangente: N₁ > 0 según la proyección de X, N₂ = 0 (se omite).
+        # En una esquina la recta de N₁ puede salir de la planta por ambos lados: esa cruz no tiene brazos.
+        check(set(mats) == {0} and info["count"] <= info["omitted"] <= info["count"] + 4
+              and dirs.data.color_attributes.get("candela_fea") is not None,
+              "direcciones de N: tracción uniaxial, sin brazo de N₂")
+        zs = [v.co.z for v in mesh.vertices]
+        gz = [v.co.z for v in dirs.data.vertices]
+        check(min(zs) - 0.05 < min(gz) and max(gz) < max(zs) + 0.05, "direcciones de N: sobre las caras del cascarón")
+        rs.output = 'SURFACE'  # misma malla FE, otra malla mostrada: se reasocia
+        legend = json.loads(rs.fea_results_legend)
+        check("error" not in legend and mesh.color_attributes.get("candela_fea") is not None
+              and len(mesh.color_attributes["candela_fea"].data) == len(mesh.vertices)
+              and build.find_child(rob, build.ROLE_DIRECTIONS) is not None,
+              "resultados: se reasocian al mostrar sólo la superficie")
+        rs.output = 'SOLID'
+        n_mod = len(mesh.vertices)
+        rs.grid_count_x = 2
+        first = [v.co for v in mesh.vertices[:n_mod]]
+        cx = sum(c.x for c in first) / n_mod
+        dirs = build.find_child(rob, build.ROLE_DIRECTIONS)
+        gx = sum(v.co.x for v in dirs.data.vertices) / len(dirs.data.vertices)
+        check(abs(gx - cx) < 0.05 * rs.span_x and cx < -0.25 * rs.span_x,
+              f"direcciones de N: en el primer módulo de la retícula (x = {gx:.2f}, módulo {cx:.2f})")
+        rs.grid_instancing = 'INSTANCES'
+        dirs = build.find_child(rob, build.ROLE_DIRECTIONS)
+        gx = sum(v.co.x for v in dirs.data.vertices) / len(dirs.data.vertices)
+        check(abs(gx - cx) < 0.05 * rs.span_x and not instancing.is_instanced(dirs),
+              "direcciones de N: en la primera colocación de la retícula instanciada")
+        rs.grid_count_x, rs.grid_instancing = 1, 'AUTO'
         rs.fea_result_quantity = 'M_X'
         mesh.attributes["candela_fea_valor"].data.foreach_get("value", vals)
         t_ = rs.thickness
@@ -679,6 +715,9 @@ def main():
         legend = json.loads(rs.fea_results_legend)
         check(legend["kind"] == "BUCKLE" and legend["factor"] == 8.0 and legend["factor_source"] == ".dat",
               "resultados: modo de pandeo con el factor del .dat")
+        check(build.find_child(rob, build.ROLE_DIRECTIONS) is None and "pandeo" in legend["directions"]["reason"],
+              "direcciones de N: un modo de pandeo no trae esfuerzos")
+        draw_all_panels(rob, "modo de pandeo")
         rs.fea_result_item = "0"
         rs.fea_result_quantity = 'DISP'
         rs.fea_result_deformed = True
@@ -694,13 +733,15 @@ def main():
         rs.show_rulings = False
         check(mesh.color_attributes.get("candela_fea") is not None, "resultados: un cambio de vista no los invalida")
         rs.thickness = 0.06
-        check(mesh.color_attributes.get("candela_fea") is None and build.find_child(rob, build.ROLE_DEFORMED) is None,
-              "resultados: se ocultan si cambia la geometría")
+        check(mesh.color_attributes.get("candela_fea") is None and build.find_child(rob, build.ROLE_DEFORMED) is None
+              and build.find_child(rob, build.ROLE_DIRECTIONS) is None, "resultados: se ocultan si cambia la geometría")
         draw_all_panels(rob, "resultados desactualizados")
         rs.thickness = 0.04
-        check(mesh.color_attributes.get("candela_fea") is not None, "resultados: vuelven al restaurar el parámetro")
+        check(mesh.color_attributes.get("candela_fea") is not None and build.find_child(rob, build.ROLE_DIRECTIONS)
+              is not None, "resultados: vuelven al restaurar el parámetro")
         bpy.ops.candela.fea_clear()
-        check(not rs.fea_results_summary and mesh.color_attributes.get("candela_fea") is None, "resultados: quitar")
+        check(not rs.fea_results_summary and mesh.color_attributes.get("candela_fea") is None
+              and build.find_child(rob, build.ROLE_DIRECTIONS) is None, "resultados: quitar")
         bpy.ops.candela.delete()
 
         # Guardar y reabrir .blend

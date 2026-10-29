@@ -239,6 +239,9 @@ class FeaResults:
     normals: dict[int, Vec3] = field(default_factory=dict)
     thickness: dict[int, float] = field(default_factory=dict)
     points: dict[int, Vec3] = field(default_factory=dict)               # nodo FE -> posición (superficie media)
+    plan: dict[int, tuple[float, float]] = field(default_factory=dict)  # nodo FE -> punto en planta (referencia)
+    anchor: Vec3 | None = None        # primer vértice del módulo mostrado al asociar (para situar dibujos)
+    model: object = None              # ShellModel del módulo (direcciones de N sobre la superficie)
 
     def labels(self) -> list[str]:
         return [_label(it) for it in self.items]
@@ -313,13 +316,14 @@ def section_csv(res: FeaResults, item: int, decimal: str = ",") -> str:
     out.writerow(["CandelaLab · esfuerzos por unidad de longitud", res.labels()[item]])
     out.writerow(["Convención", "N en kN/m (tracción +); M en kN·m/m (M > 0 tracciona el extradós); ejes "
                   "locales x = proyección del X global sobre la lámina, y = n × x; de las tensiones de ambas caras "
-                  "con distribución lineal en el espesor."])
+                  "con distribución lineal en el espesor. θN1: ángulo de la dirección de N1 desde x hacia y "
+                  "(grados); la de N2 es perpendicular."])
     out.writerow(["Aviso", "Resultados de un análisis lineal con datos del usuario. Interpretarlos y verificar el "
                   "diseño corresponde a un ingeniero."])
     if res.output == "2D":
         out.writerow(["Salida 2D", "CalculiX promedió en el espesor: no hay momentos."])
     out.writerow([])
-    out.writerow(["Nodo", "x", "y", "z", "t", "N1", "N2", "Nx", "Ny", "Nxy", "M1", "M2", "Mx", "My", "Mxy"])
+    out.writerow(["Nodo", "x", "y", "z", "t", "N1", "N2", "Nx", "Ny", "Nxy", "θN1", "M1", "M2", "Mx", "My", "Mxy"])
     forces = res._section(item)
     for v in sorted(forces):
         f = forces[v]
@@ -327,7 +331,8 @@ def section_csv(res: FeaResults, item: int, decimal: str = ",") -> str:
             continue
         p = res.points.get(v, (None, None, None))
         m = f[5:] if res.output == "3D" else (None,) * 5
-        out.writerow([v + 1, *(num(c) for c in p), num(res.thickness[v]), *(num(x) for x in f[:5]),
+        angle = math.degrees(0.5 * math.atan2(2.0 * f[4], f[2] - f[3]))
+        out.writerow([v + 1, *(num(c) for c in p), num(res.thickness[v]), *(num(x) for x in f[:5]), num(angle, 2),
                       *(num(x, 5) for x in m)])
     return w.getvalue()
 
@@ -378,12 +383,13 @@ def _label(it: ResultItem) -> str:
     return f"{it.step} · {it.title}"
 
 
-def load_results(frd: Frd, dat: dict | None, fe, display_plan, display_points, tolerance: float | None = None
-                 ) -> FeaResults:
+def load_results(frd: Frd, dat: dict | None, fe, display_plan, display_points, tolerance: float | None = None,
+                 model=None) -> FeaResults:
     """Asocia el .frd al modelo FE (pasos) y a los vértices del cascarón mostrado (módulo).
 
     `display_plan` y `display_points`: punto en planta de referencia y posición
-    3D de cada vértice de la malla del cascarón en Blender.
+    3D de cada vértice de la malla del cascarón en Blender. `model`: el
+    ShellModel del módulo, para dibujar sobre su superficie.
     """
     from .fea import analysis_steps
     steps = analysis_steps(fe)
@@ -402,7 +408,10 @@ def load_results(frd: Frd, dat: dict | None, fe, display_plan, display_points, t
         dist_max = 0.0
     else:
         output = "3D"
-        tol = tolerance if tolerance is not None else 0.6 * t + 1e-6 * size
+        # Una cara expandida dista de la del sólido hasta (espesor/2)·sen α (el sólido se desfasa en
+        # vertical o con el inglete; CalculiX, según la normal): se usa el espesor mayor (capiteles).
+        thickest = max(t, max(fe.nodal_thickness.values(), default=t))
+        tol = tolerance if tolerance is not None else 0.6 * thickest + 1e-6 * size
         vertex_nodes, dist_max = _nearest_nodes(frd.nodes, display_points, tol)
     missing = sum(1 for v in vertex_nodes if v is None)
     if missing > 0.02 * len(vertex_nodes):
@@ -470,7 +479,8 @@ def load_results(frd: Frd, dat: dict | None, fe, display_plan, display_points, t
                           "has_stress": it.stress is not None} for it in items],
                "reactions": reactions, "checks": checks}
     return FeaResults(output, vertex_nodes, items, summary, vertex_fe, faces, dict(fe.normals), thick,
-                      {v: fe.nodes[v] for v in fe.plan})
+                      {v: fe.nodes[v] for v in fe.plan}, dict(fe.plan),
+                      tuple(display_points[0]) if len(display_points) else None, model)
 
 
 def _organize(frd: Frd, dat, steps, checks) -> list[ResultItem]:
