@@ -64,7 +64,7 @@ def _result_items(self, context):
 NON_PARAMETERS = {"rna_type", "name", "is_shell", "report_json", "variants", "variant_index", "fea_summary_json",
                   "fea_results_path", "fea_results_key", "fea_results_summary", "fea_results_legend",
                   "fea_export_key", "fea_result_item", "fea_result_quantity", "fea_result_show",
-                  "fea_result_deformed", "fea_result_scale"}
+                  "fea_result_deformed", "fea_result_scale", "fea_dirs_show", "fea_dirs_spacing", "fea_dirs_scale"}
 
 
 def settings_to_dict(settings) -> dict:
@@ -397,6 +397,20 @@ class CANDELA_PG_shell(PropertyGroup):
     fea_result_scale: FloatProperty(name="Escala", default=0.0, min=0.0, soft_max=10000.0, update=_on_result_change,
                                     description="Factor de la deformada; 0 = automático (el máximo se dibuja "
                                                 "como el 5 % del tamaño)")
+    fea_dirs_show: BoolProperty(
+        name="Direcciones principales de N", default=False, update=_on_result_change,
+        description="Cruces sobre el cascarón (objeto hijo «Direcciones de N»): brazos según N₁ y N₂ de longitud "
+                    "proporcional a |N|; tracción en rojo con puntas hacia fuera, compresión en azul con puntas "
+                    "hacia dentro")
+    fea_dirs_spacing: FloatProperty(
+        name="Separación", default=0.0, min=0.0, soft_max=10.0, subtype='DISTANCE', unit='LENGTH',
+        update=_on_result_change,
+        description="Lado de la rejilla en planta: una cruz por celda, en el nodo más cercano a su centro; "
+                    "0 = automática (1/16 del lado mayor de la planta)")
+    fea_dirs_scale: FloatProperty(
+        name="kN/m por metro", default=0.0, min=0.0, soft_max=10000.0, update=_on_result_change,
+        description="Esfuerzo que representa un metro de brazo; 0 = automática (el brazo mayor mide el 90 % de "
+                    "la separación). Fíjala para comparar resultados entre sí")
 
     # --- Estado interno ----------------------------------------------------------------------
     report_json: StringProperty(default="", options={'HIDDEN'})

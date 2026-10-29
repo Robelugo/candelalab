@@ -156,7 +156,19 @@ exactamente reglada y el espesor del concreto es constante.
     los paños y abanico ajustado por bisección. Con espesor normal usa Steiner punto a punto, más la
     cuña de inglete de las limas bajo el capitel (la misma corrección de `metrics`, ahora con
     `crease_wedge` compartido).
-* **Siguiente.** Direcciones principales de N dibujadas sobre el cascarón.
+* **v0.13 (hecho) Direcciones principales de N.** `core/directions.py` toma (Nx, Ny, Nxy) de cada nodo
+  de lámina y obtiene θ₁ = ½·atan2(2·Nxy, Nx − Ny), d₁ = cos θ₁·e₁ + sin θ₁·e₂ y d₂ = n × d₁.
+  * Muestrea una cruz por celda de una rejilla en planta centrada (el nodo más cercano al centro).
+  * Cada brazo es la recta en planta q₀ + u·(d_x, d_y): como d es tangente, su longitud sobre la
+    superficie es u hasta segundo orden. Cada vértice, también los bordes de la cinta y las esquinas
+    de las puntas, se lleva a la cara con el mismo desfase que el sólido (vertical o inglete, con el
+    capitel), así que la cinta se dobla con la superficie y en las limas.
+  * Los brazos se recortan en el borde por bisección. Blender sólo traslada la malla al primer módulo.
+  * Al probarlo se corrigieron dos fallos anteriores. La tolerancia de la asociación 3D ahora usa el
+    espesor mayor, el de los capiteles. Y la caché de resultados se invalida al cambiar entre sólido
+    y superficie.
+* **Siguiente.** Por decidir. Candidatos: trayectorias continuas de N (isostáticas) y direcciones
+  principales de M.
 * **v0.3 Cimbra y materiales.** Tablas reales a lo largo de las generatrices del intradós, vigas
   madrinas, puntales hasta el desplante, despiece y cuantificación.
 * **v0.4 Análisis.** Exportar a CalculiX/OpenSees/Code_Aster (elementos lámina, materiales, cargas y

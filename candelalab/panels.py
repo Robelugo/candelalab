@@ -484,6 +484,11 @@ class CANDELA_PT_fea_results(_Sub, bpy.types.Panel):
         sub = row.row()
         sub.enabled = s.fea_result_deformed
         sub.prop(s, "fea_result_scale")
+        layout.prop(s, "fea_dirs_show")
+        col = layout.column(align=True)
+        col.enabled = s.fea_dirs_show
+        col.prop(s, "fea_dirs_spacing")
+        col.prop(s, "fea_dirs_scale")
 
         box = layout.box()
         box.use_property_split = False
@@ -502,6 +507,19 @@ class CANDELA_PT_fea_results(_Sub, bpy.types.Panel):
                 _wrapped(box, context, legend.get("reason", "Sin este dato en el resultado elegido."), icon='INFO')
             if legend.get("scale") is not None and s.fea_result_deformed:
                 _kv(box.column(), "Escala de la deformada", f"× {legend['scale']:.4g}")
+            dirs = legend.get("directions")
+            if dirs and s.fea_dirs_show:
+                if dirs.get("count"):
+                    col = box.column(align=True)
+                    _kv(col, "Cruces de N", f"{dirs['count']}, cada {dirs['spacing']:.3g} m")
+                    _kv(col, "Escala de las cruces", f"1 m = {dirs['scale']:.4g} kN/m")
+                    col.label(text="Rojo, puntas hacia fuera: tracción")
+                    col.label(text="Azul, puntas hacia dentro: compresión")
+                    if dirs.get("omitted"):
+                        _wrapped(box, context, f"{dirs['omitted']} brazos con |N| menor que el 2 % del máximo "
+                                               f"({dirs['max']:.4g} kN/m) no se dibujan.", icon='INFO')
+                else:
+                    _wrapped(box, context, "Direcciones de N: " + dirs.get("reason", "sin datos."), icon='INFO')
             if legend.get("kind") == "BUCKLE":
                 _wrapped(box, context, f"Factor de pandeo lineal {legend['factor']:.4g} (de {legend['factor_source']}): "
                                        "sobreestima la carga crítica de un cascarón real; no es una capacidad.",

@@ -211,6 +211,7 @@ Vigas, nervios, apoyos y cimbra se conservan como objetos independientes"""
         build.remove_child(obj, build.ROLE_RULINGS)
         build.remove_child(obj, build.ROLE_NORMALS)
         build.remove_child(obj, build.ROLE_DEFORMED)
+        build.remove_child(obj, build.ROLE_DIRECTIONS)
         for role in (build.ROLE_SUPPORTS, build.ROLE_BEAMS, build.ROLE_RIBS, build.ROLE_FORMWORK):
             child = build.find_child(obj, role)
             if child is not None:
