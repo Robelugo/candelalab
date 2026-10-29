@@ -6,10 +6,12 @@ import textwrap
 
 import bpy
 
-from . import build
+from . import build, operators
+from .core.ccx import find_ccx
 from .core.grid import PRESETS as GRID_PRESETS
 from .core.radial import PRESETS as RADIAL_PRESETS
 from .core.umbrella import PRESETS as UMBRELLA_PRESETS
+from .props import preferences
 
 LEVEL_ICONS = {"ERROR": 'CANCEL', "WARNING": 'ERROR', "INFO": 'INFO'}
 MAX_TYPES_SHOWN = 8
@@ -387,8 +389,8 @@ class CANDELA_PT_fea(_Sub, bpy.types.Panel):
         s = obj.candela
         layout.use_property_split = True
         layout.use_property_decorate = False
-        _wrapped(layout, context, "Prepara un modelo para CalculiX o Abaqus: CandelaLab no lo resuelve.",
-                 icon='INFO')
+        _wrapped(layout, context, "Prepara un modelo para CalculiX o Abaqus. «Calcular con CalculiX» lo resuelve "
+                                  "con tu CalculiX y carga los resultados.", icon='INFO')
         box = layout.box()
         box.label(text="Malla de lámina (superficie media)", icon='MESH_GRID')
         box.row().prop(s, "fea_element_order", expand=True)
@@ -421,6 +423,23 @@ class CANDELA_PT_fea(_Sub, bpy.types.Panel):
         row = layout.row(align=True)
         row.operator("candela.fea_check", icon='VIEWZOOM')
         row.operator("candela.export_fea", icon='EXPORT', text="Exportar .inp")
+
+        box = layout.box()
+        status = operators.run_status(obj)
+        if status:
+            row = box.row(align=True)
+            row.label(text=status, icon='TIME')
+            row.operator("candela.fea_stop", icon='CANCEL')
+        else:
+            box.operator("candela.fea_run", icon='PLAY')
+        box.prop(s, "fea_work_dir")
+        prefs = preferences(context)
+        if find_ccx(bpy.path.abspath(prefs.ccx_path) if prefs else "") is None:
+            _wrapped(box, context, "No se encontró CalculiX: indica dónde está ccx en Preferencias > Complementos > "
+                                   "CandelaLab (CandelaLab no lo incluye).", icon='ERROR')
+        elif not bpy.data.filepath and s.fea_work_dir.startswith("//"):
+            _wrapped(box, context, "El .blend no está guardado: el cálculo irá a la carpeta temporal del sistema.",
+                     icon='INFO')
 
         data = build.fea_summary(obj)
         if data is None:
@@ -459,9 +478,9 @@ class CANDELA_PT_fea_results(_Sub, bpy.types.Panel):
         row.operator("candela.fea_load", icon='IMPORT')
         row.operator("candela.fea_clear", icon='X', text="")
         if not s.fea_results_summary:
-            _wrapped(layout, context, "Exporta el .inp, calcúlalo con CalculiX (ccx -i nombre) y carga el .frd. "
-                                      "El .dat del mismo nombre aporta los factores de pandeo y las reacciones.",
-                     icon='INFO')
+            _wrapped(layout, context, "Pulsa «Calcular con CalculiX» en «Análisis (FEA)», o exporta el .inp, "
+                                      "calcúlalo (ccx -i nombre) y carga el .frd. El .dat del mismo nombre aporta "
+                                      "los factores de pandeo y las reacciones.", icon='INFO')
             return
         summary = json.loads(s.fea_results_summary)
         layout.label(text=os.path.basename(s.fea_results_path) + f" · salida {summary['output']}", icon='FILE')

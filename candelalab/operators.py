@@ -1,20 +1,27 @@
 """Operadores de CandelaLab."""
 
+import atexit
 import json
+import os
+import tempfile
+import time
+from dataclasses import dataclass
 
 import bpy
+from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import build
+from .core import ccx
 from .core.export import build_document, cutlist_csv
-from .core.fea import fe_model_from_params, to_inp
+from .core.fea import analysis_steps, fe_model_from_params, to_inp
 from .core.frd import results_key, section_csv
 from .core.pipeline import evaluate
 from .core.radial import PRESETS as RADIAL_PRESETS
 from .core.grid import PRESETS as GRID_PRESETS
 from .core.umbrella import PRESETS as UMBRELLA_PRESETS
-from .props import apply_dict, settings_to_dict, updates_suspended
+from .props import apply_dict, preferences, settings_to_dict, updates_suspended
 
 
 def _active_shell(context):
@@ -442,11 +449,207 @@ class CANDELA_OT_fea_load(_ShellOperator, bpy.types.Operator, ImportHelper):
         except (OSError, ValueError) as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
-        for ch in res.summary["checks"]:
-            if ch["level"] != "INFO":
-                self.report({'WARNING'}, ch["message"])
-        self.report({'INFO'}, f"Resultados {res.output}: {len(res.items)} conjuntos sobre "
-                              f"{res.summary['vertices']} vértices")
+        _report_results(self, res)
+        return {'FINISHED'}
+
+
+def _report_results(op, res):
+    for ch in res.summary["checks"]:
+        if ch["level"] != "INFO":
+            op.report({'WARNING'}, ch["message"])
+    op.report({'INFO'}, f"Resultados {res.output}: {len(res.items)} conjuntos sobre {res.summary['vertices']} vértices")
+
+
+# --- Calcular con CalculiX ---------------------------------------------------------------------
+
+
+@dataclass
+class _Run:
+    obj: str            # nombre del cascarón
+    proc: object        # subprocess.Popen
+    log: object         # archivo abierto con la salida de ccx
+    folder: str
+    job: str
+    key: str            # huella de los parámetros exportados
+    steps: int
+    started: float
+    cancel: bool = False
+
+    @property
+    def log_path(self):
+        return os.path.join(self.folder, self.job + "_ccx.log")
+
+    def output(self) -> str:
+        try:
+            with open(self.log_path, encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+
+_runs: dict[str, _Run] = {}  # cálculos en curso, por nombre del cascarón
+
+
+def run_status(obj) -> str | None:
+    """Progreso del cálculo en curso de este cascarón, o None si no hay ninguno."""
+    run = _runs.get(obj.name)
+    if run is None:
+        return None
+    step, _done = ccx.progress(run.output())
+    return f"Calculando: paso {max(step, 1)} de {run.steps} · {time.monotonic() - run.started:.0f} s"
+
+
+def stop_runs():
+    for run in list(_runs.values()):
+        ccx.stop(run.proc)
+        run.log.close()
+    _runs.clear()
+
+
+@persistent
+def _stop_on_load(_dummy):
+    stop_runs()
+
+
+def work_dir(settings) -> tuple[str, bool]:
+    """Carpeta de cálculo y si es la temporal (relativa a un .blend sin guardar)."""
+    raw = settings.fea_work_dir or "//candelalab_fea"
+    if raw.startswith("//") and not bpy.data.filepath:
+        return os.path.join(tempfile.gettempdir(), "candelalab_fea"), True
+    return os.path.normpath(bpy.path.abspath(raw)), False
+
+
+def _redraw(context):
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
+class CANDELA_OT_fea_run(_ShellOperator, bpy.types.Operator):
+    """Exportar el modelo, calcularlo con CalculiX y cargar los resultados al terminar (Blender sigue respondiendo)"""
+    bl_idname = "candela.fea_run"
+    bl_label = "Calcular con CalculiX"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = _active_shell(context)
+        return obj is not None and obj.name not in _runs
+
+    def _start(self, context):
+        obj = _active_shell(context)
+        prefs = preferences(context)
+        exe = ccx.find_ccx(bpy.path.abspath(prefs.ccx_path) if prefs else "")
+        if exe is None:
+            self.report({'ERROR'}, "No se encontró CalculiX: indica dónde está ccx en Preferencias > Complementos > "
+                                   "CandelaLab.")
+            return None
+        fe = _build_fea(self, obj)
+        if fe is None:
+            return None
+        if fe.summary["rigid_body_modes"]:
+            self.report({'ERROR'}, "Los apoyos no impiden todos los movimientos de sólido rígido: CalculiX no puede "
+                                   "resolver el modelo (ver «Revisar modelo»).")
+            return None
+        folder, temporary = work_dir(obj.candela)
+        job = ccx.job_name(obj.name)
+        if any(r.folder == folder and r.job == job for r in _runs.values()):
+            self.report({'ERROR'}, f"Ya hay un cálculo «{job}» en curso en {folder}.")
+            return None
+        try:
+            os.makedirs(folder, exist_ok=True)
+            ccx.clear_outputs(folder, job)
+            with open(os.path.join(folder, job + ".inp"), "w", encoding="ascii", newline="\n") as fh:
+                fh.write(to_inp(fe, f"CandelaLab {obj.name} ({obj.candela.shell_type})"))
+            proc, log = ccx.start(exe, folder, job, prefs.ccx_threads if prefs else 0)
+        except OSError as exc:
+            self.report({'ERROR'}, f"No se pudo lanzar CalculiX: {exc}")
+            return None
+        key = results_key(settings_to_dict(obj.candela))
+        with updates_suspended():
+            obj.candela.fea_export_key = key
+        if temporary:
+            self.report({'WARNING'}, f"El .blend no está guardado: el cálculo se guarda en {folder}.")
+        return _Run(obj.name, proc, log, folder, job, key, len(analysis_steps(fe)), time.monotonic())
+
+    def _finish(self, run):
+        _runs.pop(run.obj, None)
+        run.log.close()
+        if run.cancel:
+            self.report({'WARNING'}, "Cálculo detenido.")
+            return {'CANCELLED'}
+        out = run.output()
+        frd = os.path.join(run.folder, run.job + ".frd")
+        message = ccx.error(out)
+        if run.proc.returncode or message or not ccx.progress(out)[1] or not os.path.exists(frd):
+            self.report({'ERROR'}, f"CalculiX no terminó: {message or f'código {run.proc.returncode}'}. "
+                                   f"Salida completa: {run.log_path}")
+            return {'CANCELLED'}
+        obj = bpy.data.objects.get(run.obj)
+        if obj is None or not build.is_shell(obj):
+            self.report({'WARNING'}, f"El cascarón «{run.obj}» ya no existe. Resultados en {frd}.")
+            return {'CANCELLED'}
+        if results_key(settings_to_dict(obj.candela)) != run.key:
+            self.report({'WARNING'}, f"Los datos del modelo cambiaron durante el cálculo: los resultados no se "
+                                     f"cargan. Están en {frd}.")
+            return {'CANCELLED'}
+        try:
+            res = build.load_fea_results(obj, frd)
+        except (OSError, ValueError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        _report_results(self, res)
+        self.report({'INFO'}, f"CalculiX terminó en {time.monotonic() - run.started:.1f} s: {frd}")
+        return {'FINISHED'}
+
+    def execute(self, context):
+        """Desde un script: espera a que termine."""
+        run = self._start(context)
+        if run is None:
+            return {'CANCELLED'}
+        run.proc.wait()
+        return self._finish(run)
+
+    def invoke(self, context, event):
+        run = self._start(context)
+        if run is None:
+            return {'CANCELLED'}
+        _runs[run.obj] = run
+        self._run = run
+        self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        _redraw(context)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+        run = self._run
+        if run.cancel:
+            ccx.stop(run.proc)
+        _redraw(context)
+        if run.proc.poll() is None:
+            return {'PASS_THROUGH'}
+        context.window_manager.event_timer_remove(self._timer)
+        result = self._finish(run)
+        _redraw(context)
+        return result
+
+
+class CANDELA_OT_fea_stop(_ShellOperator, bpy.types.Operator):
+    """Detener el cálculo de CalculiX en curso de este cascarón"""
+    bl_idname = "candela.fea_stop"
+    bl_label = "Detener"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = _active_shell(context)
+        return obj is not None and obj.name in _runs
+
+    def execute(self, context):
+        _runs[_active_shell(context).name].cancel = True
         return {'FINISHED'}
 
 
@@ -522,8 +725,8 @@ classes = (
     CANDELA_OT_fit_ground, CANDELA_OT_freeze, CANDELA_OT_delete,
     CANDELA_OT_viewport_colors, CANDELA_OT_variant_add, CANDELA_OT_variant_apply, CANDELA_OT_variant_update,
     CANDELA_OT_variant_remove, CANDELA_OT_export_json, CANDELA_OT_export_cutlist, CANDELA_OT_fea_check,
-    CANDELA_OT_export_fea, CANDELA_OT_fea_load, CANDELA_OT_fea_export_section, CANDELA_OT_fea_clear,
-    CANDELA_OT_import_json,
+    CANDELA_OT_export_fea, CANDELA_OT_fea_load, CANDELA_OT_fea_run, CANDELA_OT_fea_stop,
+    CANDELA_OT_fea_export_section, CANDELA_OT_fea_clear, CANDELA_OT_import_json,
 )
 
 
@@ -539,9 +742,15 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.VIEW3D_MT_mesh_add.append(menu_add)
+    bpy.app.handlers.load_pre.append(_stop_on_load)  # abrir otro archivo o salir detiene los cálculos en curso
+    atexit.register(stop_runs)
 
 
 def unregister():
+    atexit.unregister(stop_runs)
+    stop_runs()
+    if _stop_on_load in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.remove(_stop_on_load)
     bpy.types.VIEW3D_MT_mesh_add.remove(menu_add)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

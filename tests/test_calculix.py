@@ -22,16 +22,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "candelalab"))
 
+from core import ccx  # noqa: E402
 from core.fea import GRAVITY, fe_model_from_params, to_inp  # noqa: E402
 from core.frd import load_results, parse_dat, parse_frd  # noqa: E402
 from core.pipeline import evaluate  # noqa: E402
 
-CCX = os.environ.get("CANDELALAB_CCX") or shutil.which("ccx")
+CCX = ccx.find_ccx()
 
 K, H, A, B, T = 0.1, 3.0, 4.0, 3.0, 0.05  # z = H + K·x·y sobre [−A, A] × [−B, B]
 HYPAR = {"shell_type": "HYPAR", "definition": "CORNERS", "span_x": 2 * A, "span_y": 2 * B,
@@ -50,10 +52,7 @@ def solve(params, folder, name="modelo", with_dat=True):
     ev = evaluate(params)
     with open(os.path.join(folder, name + ".inp"), "w", encoding="ascii", newline="\n") as f:
         f.write(to_inp(fe, name))
-    cmd = [CCX, "-i", name]
-    if CCX.lower().endswith((".cmd", ".bat")):
-        cmd = ["cmd", "/c", *cmd]
-    run = subprocess.run(cmd, cwd=folder, capture_output=True, text=True)
+    run = subprocess.run(ccx.command(CCX, name), cwd=folder, capture_output=True, text=True)
     frd_path = os.path.join(folder, name + ".frd")
     if not os.path.exists(frd_path):
         raise AssertionError(f"ccx no escribió el .frd (código {run.returncode}):\n{run.stdout[-2000:]}")
@@ -71,6 +70,55 @@ def check(res, code):
     return next(c for c in res.summary["checks"] if c["code"] == code)
 
 
+LOG = """
+ STEP            1
+
+ Static analysis was selected
+
+ STEP            2
+
+ *ERROR in gen3dmpc: nodes belonging to
+        shell elements must not be
+        subject to a RIGID                MPC.
+
+"""
+
+
+class TestCcxHelpers(unittest.TestCase):
+    """Lo que no necesita CalculiX: nombres, órdenes, progreso y errores de su salida."""
+
+    def test_job_names_and_commands(self):
+        self.assertEqual(ccx.job_name("Hypar.001"), "Hypar_001")
+        self.assertEqual(ccx.job_name("Bóveda radial"), "B_veda_radial")
+        self.assertEqual(ccx.job_name("..."), "modelo")
+        self.assertEqual(ccx.command("/opt/ccx", "m"), ["/opt/ccx", "-i", "m"])
+        self.assertEqual(ccx.command(r"D:\x\ccx.CMD", "m"), ["cmd", "/c", r"D:\x\ccx.CMD", "-i", "m"])
+        env = ccx.environment(3)
+        self.assertEqual((env["OMP_NUM_THREADS"], env["CCX_NPROC_EQUATION_SOLVER"]), ("3", "3"))
+        self.assertEqual(ccx.environment(0)["OMP_NUM_THREADS"], str(os.cpu_count() or 1))
+
+    def test_progress_and_errors_from_the_output(self):
+        self.assertEqual(ccx.progress(LOG), (2, False))
+        self.assertEqual(ccx.progress(LOG + "\n Job finished\n"), (2, True))
+        self.assertEqual(ccx.progress(""), (0, False))
+        self.assertEqual(ccx.error(LOG), "*ERROR in gen3dmpc: nodes belonging to shell elements must not be subject "
+                                         "to a RIGID MPC.")
+        self.assertIsNone(ccx.error(" STEP 1\n Job finished\n"))
+
+    def test_configured_path_and_old_outputs(self):
+        tmp = tempfile.mkdtemp(prefix="clab_ccx_")
+        try:
+            fake = os.path.join(tmp, "ccx.cmd")
+            for ext in (".inp", ".frd", ".dat", ".sta", ".cvg"):
+                open(os.path.join(tmp, "m" + ext), "w").close()
+            open(fake, "w").close()
+            self.assertEqual(ccx.find_ccx(fake), fake)
+            ccx.clear_outputs(tmp, "m")
+            self.assertEqual(sorted(os.listdir(tmp)), ["ccx.cmd", "m.inp"])     # el .inp no se toca
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 @unittest.skipUnless(CCX, "sin CalculiX (define CANDELALAB_CCX o pon ccx en el PATH)")
 class TestCalculix(unittest.TestCase):
     def setUp(self):
@@ -78,6 +126,32 @@ class TestCalculix(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_background_run_and_stop(self):
+        # Como el botón de Blender: en segundo plano, con la salida en <trabajo>_ccx.log.
+        fe, _rep = fe_model_from_params({**STRIP, "fea_buckling": True})
+        with open(os.path.join(self.tmp, "m.inp"), "w", encoding="ascii", newline="\n") as f:
+            f.write(to_inp(fe, "m"))
+        proc, log = ccx.start(CCX, self.tmp, "m", threads=1)
+        proc.wait()
+        log.close()
+        with open(os.path.join(self.tmp, "m_ccx.log"), encoding="utf-8") as f:
+            out = f.read()
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(ccx.progress(out), (3, True))                         # PP, COMB y PANDEO_COMB
+        self.assertIsNone(ccx.error(out))
+        # Detener: también el ccx que lanza un .cmd. Un modelo mayor da tiempo a pararlo a medias.
+        big, _rep = fe_model_from_params({**HYPAR, "fea_refine": 4})
+        with open(os.path.join(self.tmp, "g.inp"), "w", encoding="ascii", newline="\n") as f:
+            f.write(to_inp(big, "g"))
+        proc, log = ccx.start(CCX, self.tmp, "g", threads=1)
+        time.sleep(1.0)
+        ccx.stop(proc)
+        log.close()
+        self.assertIsNotNone(proc.poll())
+        if sys.platform == "win32":                                            # no queda ningún ccx.exe colgado
+            tasks = subprocess.run(["tasklist", "/FI", "IMAGENAME eq ccx.exe"], capture_output=True, text=True)
+            self.assertNotIn("ccx.exe", tasks.stdout)
 
     def test_strip_matches_statics_and_beam_theory(self):
         weight = 2400 * GRAVITY * T_STRIP * L * W_STRIP          # N

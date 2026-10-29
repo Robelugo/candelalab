@@ -64,7 +64,8 @@ def _result_items(self, context):
 NON_PARAMETERS = {"rna_type", "name", "is_shell", "report_json", "variants", "variant_index", "fea_summary_json",
                   "fea_results_path", "fea_results_key", "fea_results_summary", "fea_results_legend",
                   "fea_export_key", "fea_result_item", "fea_result_quantity", "fea_result_show",
-                  "fea_result_deformed", "fea_result_scale", "fea_dirs_show", "fea_dirs_spacing", "fea_dirs_scale"}
+                  "fea_result_deformed", "fea_result_scale", "fea_dirs_show", "fea_dirs_spacing", "fea_dirs_scale",
+                  "fea_work_dir"}
 
 
 def settings_to_dict(settings) -> dict:
@@ -367,6 +368,10 @@ class CANDELA_PG_shell(PropertyGroup):
         default='3D')
 
     # --- Resultados FEA leídos (.frd): estado de la vista, no son parámetros ------------------
+    fea_work_dir: StringProperty(
+        name="Carpeta de cálculo", subtype='DIR_PATH', default="//candelalab_fea",
+        description="Donde «Calcular con CalculiX» escribe el .inp y CalculiX sus resultados (.frd, .dat). «//» es "
+                    "la carpeta del .blend; sin guardar el .blend se usa la carpeta temporal del sistema")
     fea_results_path: StringProperty(name="Archivo de resultados", subtype='FILE_PATH', default="")
     fea_results_key: StringProperty(default="", options={'HIDDEN'})
     fea_results_summary: StringProperty(default="", options={'HIDDEN'})
@@ -419,7 +424,36 @@ class CANDELA_PG_shell(PropertyGroup):
     variant_index: IntProperty(default=0)
 
 
-classes = (CANDELA_PG_variant, CANDELA_PG_shell)
+class CANDELA_AP_preferences(bpy.types.AddonPreferences):
+    """Dónde está CalculiX: CandelaLab no lo incluye."""
+    bl_idname = __package__
+
+    ccx_path: StringProperty(
+        name="CalculiX (ccx)", subtype='FILE_PATH', default="",
+        description="Ejecutable de CalculiX, o un .cmd/.bat que lo lance. Vacío: se busca en la variable "
+                    "CANDELALAB_CCX y ccx en el PATH")
+    ccx_threads: IntProperty(name="Hilos", default=0, min=0, max=256,
+                             description="Núcleos que usa CalculiX; 0 = todos")
+
+    def draw(self, context):
+        from .core.ccx import find_ccx
+        layout = self.layout
+        layout.prop(self, "ccx_path")
+        layout.prop(self, "ccx_threads")
+        found = find_ccx(bpy.path.abspath(self.ccx_path))
+        layout.label(text=f"Se usará: {found}" if found else "No se encontró CalculiX.",
+                     icon='CHECKMARK' if found else 'ERROR')
+        layout.label(text="CandelaLab no incluye CalculiX: instálalo aparte (calculix.de; en Windows, por ejemplo, "
+                          "el paquete calculix de conda-forge).", icon='INFO')
+
+
+def preferences(context=None):
+    """Preferencias del complemento, o None si no está activado como complemento (p. ej. en las pruebas)."""
+    addon = (context or bpy.context).preferences.addons.get(__package__)
+    return addon.preferences if addon is not None else None
+
+
+classes = (CANDELA_PG_variant, CANDELA_PG_shell, CANDELA_AP_preferences)
 
 
 def register():
